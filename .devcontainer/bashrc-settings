@@ -64,16 +64,18 @@ if [ -f "/workspace/.env" ]; then
   set +a
 fi
 
-# 위/아래 화살표를 "현재 입력된 내용" 기준으로 히스토리 검색 이동으로 바꿉니다.
-bind '"\e[A": history-search-backward'
-bind '"\e[B": history-search-forward'
+if [[ $- == *i* ]]; then
+  # 위/아래 화살표를 "현재 입력된 내용" 기준으로 히스토리 검색 이동으로 바꿉니다.
+  bind '"\e[A": history-search-backward'
+  bind '"\e[B": history-search-forward'
 
-# HOME/END 버튼
-bind '"\e[1~": beginning-of-line'
-bind '"\e[4~": end-of-line'
-bind '"\e[H":  beginning-of-line'
-bind '"\e[F":  end-of-line'
-bind '"\eOH":  beginning-of-line'
-bind '"\eOF":  end-of-line'
-bind '"\e[7~": beginning-of-line'
-bind '"\e[8~": end-of-line'
+  # HOME/END 버튼
+  bind '"\e[1~": beginning-of-line'
+  bind '"\e[4~": end-of-line'
+  bind '"\e[H":  beginning-of-line'
+  bind '"\e[F":  end-of-line'
+  bind '"\eOH":  beginning-of-line'
+  bind '"\eOF":  end-of-line'
+  bind '"\e[7~": beginning-of-line'
+  bind '"\e[8~": end-of-line'
+fi
