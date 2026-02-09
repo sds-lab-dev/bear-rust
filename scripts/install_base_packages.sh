@@ -39,6 +39,8 @@ apt-get \
     npm \
     gh \
     rustup \
+    jq \
+    bc \
     procps && \
 rm -rf /var/lib/apt/lists/*
 
