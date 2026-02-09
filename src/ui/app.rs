@@ -24,7 +24,6 @@ enum InputMode {
 
 pub struct App {
     pub messages: Vec<ChatMessage>,
-    pub printed_message_count: usize,
     input_mode: InputMode,
     pub input_buffer: String,
     pub confirmed_workspace: Option<PathBuf>,
@@ -32,6 +31,7 @@ pub struct App {
     pub cursor_visible: bool,
     cursor_blink_at: Instant,
     current_directory: PathBuf,
+    pub scroll_offset: u16,
 }
 
 impl App {
@@ -50,7 +50,6 @@ impl App {
 
         Ok(Self {
             messages,
-            printed_message_count: 0,
             input_mode: InputMode::WorkspaceConfirm,
             input_buffer: String::new(),
             confirmed_workspace: None,
@@ -58,6 +57,7 @@ impl App {
             cursor_visible: true,
             cursor_blink_at: Instant::now(),
             current_directory,
+            scroll_offset: 0,
         })
     }
 
@@ -77,13 +77,17 @@ impl App {
         }
     }
 
-    pub fn has_unprinted_messages(&self) -> bool {
-        self.printed_message_count < self.messages.len()
-    }
-
     fn reset_cursor_blink(&mut self) {
         self.cursor_visible = true;
         self.cursor_blink_at = Instant::now();
+    }
+
+    pub fn scroll_up(&mut self) {
+        self.scroll_offset = self.scroll_offset.saturating_add(1);
+    }
+
+    pub fn scroll_down(&mut self) {
+        self.scroll_offset = self.scroll_offset.saturating_sub(1);
     }
 
     pub fn is_waiting_for_input(&self) -> bool {
@@ -146,6 +150,7 @@ impl App {
             role: MessageRole::System,
             content: content.to_string(),
         });
+        self.scroll_offset = 0;
     }
 
     fn add_user_message(&mut self, content: &str) {
@@ -153,6 +158,7 @@ impl App {
             role: MessageRole::User,
             content: content.to_string(),
         });
+        self.scroll_offset = 0;
     }
 }
 
