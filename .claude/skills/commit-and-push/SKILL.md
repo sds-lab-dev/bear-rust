@@ -28,17 +28,19 @@ You are a Git helper agent. Your task is to automatically complete a safe Git co
    - If staged diff looks unexpectedly large or includes suspicious files (secrets, .env, large binaries), stop and ask for confirmation.
 
 4) Commit (message must contain real newlines, not "\n" text):
-   - Based on the changes, propose a commit message in English, including a short subject and an body explaining "why".
+   - Based on the changes, propose a commit message in English, including a short subject and a body explaining "why".
    - Commit message format requirements:
       * Subject: use a short subject line (prefer <= 72 characters; avoid exceeding 72).
       * Body: hard-wrap the body at 72 characters per line (do not produce a single long line).
-   - Never include the literal characters "\n" in the message.      
-   - Commit with the proposed message as follows:
+   - Never include the literal characters "\n" in the message.
+   - Commit with the proposed message using a HEREDOC as follows:
       ```shell
-      {
-         printf '%s\n\n' "<subject>"
-         printf '%s\n' "<body>" | fmt -w 72
-      } | git commit -F -
+      git commit -m "$(cat <<'EOF'
+      <subject>
+
+      <body, hard-wrapped at 72 characters>
+      EOF
+      )"
       ```
 
 5) Push:
