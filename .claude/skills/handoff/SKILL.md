@@ -36,40 +36,45 @@ You are generating a HANDOFF DOCUMENT for the next task. The goal is to reset th
 
 # Handoff document template
 
-## 0. Metadata
+## Metadata
 - Datetime: <YYYY-MM-DD HH:MM:SS>
 - Repo/workspace: <path or repo name>
 - Branch/commit: <branch name + commit hash if available>
 - Authoring agent/session: <if applicable>
 
-## 1. Scope Summary
+## Initial user request
+- Write the exact message verbatim (1:1) that the user requested when this session begins.
+- Do NOT paraphrase, summarize, translate, correct typos, change formatting, or omit any content.
+- Preserve every character exactly as written, including punctuation, whitespace, line breaks, code blocks, and any special symbols.
+
+## Scope Summary
 Describe in 3–8 sentences:
 - What the current task was supposed to accomplish
 - What is considered DONE for the current task
 - What remains OUT OF SCOPE for the current task (explicitly)
 
-## 2. Current System State (as of end of the current task)
+## Current System State (as of end of the current task)
 Provide the minimal state needed to continue:
 - Feature flags / environment variables:
 - Build/test commands used:
 - Runtime assumptions (OS, containers, services, versions):
 - Any required secrets/credentials handling notes (do not include actual secrets):
 
-## 3. Key Decisions (and rationale)
+## Key Decisions (and rationale)
 List the decisions that MUST be preserved, each with:
 - Decision:
 - Rationale:
 - Alternatives considered (if any) and why rejected:
 
-## 4. Invariants (MUST HOLD)
+## Invariants (MUST HOLD)
 List non-negotiable constraints that must remain true in next tasks.
 Each invariant must be testable/verifiable.
 
-## 5. Prohibited Changes (DO NOT DO)
+## Prohibited Changes (DO NOT DO)
 List actions that would break assumptions, expand scope, or introduce risk.
 Be explicit (e.g.,): "Do NOT change public API X", "Do NOT alter schema Y", "Do NOT refactor module Z".
 
-## 6. What Changed in the current task
+## What Changed in the current task
 Be concrete and verifiable:
 - New/modified files (paths):
 - New/changed public interfaces (signatures, endpoints, CLI options):
@@ -77,11 +82,11 @@ Be concrete and verifiable:
 - Tests added/updated:
 - Migrations/config changes:
 
-## 7. Known Issues / Technical Debt
+## Known Issues / Technical Debt
 List any intentional shortcuts, open bugs, flaky tests, or follow-ups created by the current task.
 Include how to reproduce and current status.
 
-## 8. Handoff Checklist
+## Handoff Checklist
 Confirm each item with YES/NO:
 - All invariants listed: <YES/NO>
 - All prohibited changes listed: <YES/NO>
