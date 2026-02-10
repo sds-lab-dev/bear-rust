@@ -12,6 +12,8 @@ You are generating a HANDOFF DOCUMENT for the next task. The goal is to reset th
 - We just finished a task and will start a new task in a fresh new session.
 - This document is the SINGLE SOURCE OF TRUTH for the new task. Do not rely on the conversation transcript after this is created.
 
+---
+
 # Instructions
 
 ## Flow
@@ -92,13 +94,31 @@ Be concrete and verifiable:
 List any intentional shortcuts, open bugs, flaky tests, or follow-ups created by the current task.
 Include how to reproduce and current status.
 
-## Handoff Checklist
-Confirm each item with YES/NO:
-- All invariants listed: <YES/NO>
-- All prohibited changes listed: <YES/NO>
-- Concrete code changes listed: <YES/NO>
-- Output saved to <HANDOFF_DOCUMENT_PATH>: <YES/NO>
+## Git Commit(s)
+Record git state changes created during this session, regardless of whether they were made via a skill (e.g., `commit-and-push`) or manually. Do NOT assume a specific workflow tool was used.
 
-End of document.
+If NO commits were created in this session, write:
+- `No commits were created in this session.`
 
-Now generate the handoff document using the template and write it to <HANDOFF_DOCUMENT_PATH>.
+If commits WERE created (or amended/rebased) in this session, you MUST record:
+- Current HEAD:
+  - Branch: `<branch name>`
+  - Commit: `<commit_hash>`
+- Commit range attributable to this session (most recent first):
+  - `<commit_hash>`: `<subject line>`
+  - (repeat for each commit created/amended in this session)
+
+Example:
+```
+Current HEAD:
+- Branch: feature/config-hardening
+- Commit: 3f2a9c1d2e8b6b5a0a7f4c1b9d6e3a2c4f5b6c7d
+
+Commit range attributable to this session (most recent first):
+- 3f2a9c1d2e8b6b5a0a7f4c1b9d6e3a2c4f5b6c7d: Fix null deref in config loader when env var missing
+- 8a7b6c5d4e3f2a1b0c9d8e7f6a5b4c3d2e1f0a9b: Add regression test for missing CONFIG_PATH
+```
+
+---
+
+Now generate the handoff document using the template and write it to the handoff document path.
