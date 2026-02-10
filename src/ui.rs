@@ -8,8 +8,11 @@ pub use error::UiError;
 use std::io::stdout;
 use std::time::Duration;
 
-use crossterm::event::{Event, KeyEventKind, MouseEventKind};
-use crossterm::event::{DisableMouseCapture, EnableMouseCapture};
+use crossterm::event::{
+    DisableMouseCapture, EnableMouseCapture, Event, KeyEventKind,
+    KeyboardEnhancementFlags, MouseEventKind, PopKeyboardEnhancementFlags,
+    PushKeyboardEnhancementFlags,
+};
 use crossterm::terminal::{self, EnterAlternateScreen, LeaveAlternateScreen};
 use ratatui::Terminal;
 use ratatui::backend::CrosstermBackend;
@@ -24,6 +27,18 @@ pub fn run() -> Result<(), UiError> {
     let mut terminal = Terminal::new(backend)?;
 
     let mut app = App::new()?;
+
+    let keyboard_enhancement_enabled = crossterm::terminal::supports_keyboard_enhancement()
+        .unwrap_or(false);
+
+    if keyboard_enhancement_enabled {
+        crossterm::execute!(
+            stdout(),
+            PushKeyboardEnhancementFlags(KeyboardEnhancementFlags::DISAMBIGUATE_ESCAPE_CODES)
+        )?;
+    }
+
+    app.set_keyboard_enhancement_enabled(keyboard_enhancement_enabled);
 
     loop {
         app.tick();
@@ -46,6 +61,10 @@ pub fn run() -> Result<(), UiError> {
         if app.should_quit {
             break;
         }
+    }
+
+    if keyboard_enhancement_enabled {
+        crossterm::execute!(stdout(), PopKeyboardEnhancementFlags)?;
     }
 
     crossterm::execute!(stdout(), DisableMouseCapture, LeaveAlternateScreen)?;

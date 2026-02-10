@@ -37,11 +37,12 @@ pub fn render(frame: &mut Frame, app: &mut App) {
 
     if app.is_waiting_for_input() {
         let cursor = if app.cursor_visible { "█" } else { " " };
-        lines.push(Line::from(vec![
-            Span::styled("You> ", user_prefix_style),
-            Span::styled(app.input_buffer.as_str(), user_text_style),
-            Span::styled(cursor, user_text_style),
-        ]));
+        lines.extend(build_input_lines(
+            &app.input_buffer,
+            cursor,
+            user_prefix_style,
+            user_text_style,
+        ));
     } else {
         lines.push(Line::from(""));
     }
@@ -122,10 +123,19 @@ fn format_message(message: &ChatMessage) -> Vec<Line<'static>> {
             }
         }
         MessageRole::User => {
-            lines.push(Line::from(vec![
-                Span::styled("You> ", user_prefix_style),
-                Span::styled(message.content.clone(), user_text_style),
-            ]));
+            for (i, text_line) in message.content.lines().enumerate() {
+                if i == 0 {
+                    lines.push(Line::from(vec![
+                        Span::styled("You> ", user_prefix_style),
+                        Span::styled(text_line.to_string(), user_text_style),
+                    ]));
+                } else {
+                    lines.push(Line::from(Span::styled(
+                        format!("     {}", text_line),
+                        user_text_style,
+                    )));
+                }
+            }
         }
     }
     lines.push(Line::from(""));
@@ -154,6 +164,34 @@ fn build_right_column(max_width: usize) -> Vec<(String, Color, bool)> {
     for line in &description_lines {
         lines.push((line.clone(), Color::DarkGray, false));
     }
+    lines
+}
+
+fn build_input_lines<'a>(
+    input_buffer: &str,
+    cursor: &'a str,
+    prefix_style: Style,
+    text_style: Style,
+) -> Vec<Line<'a>> {
+    let mut lines = Vec::new();
+    let input_lines: Vec<&str> = input_buffer.split('\n').collect();
+
+    for (i, text_line) in input_lines.iter().enumerate() {
+        let is_last = i == input_lines.len() - 1;
+        let prefix = if i == 0 { "You> " } else { "     " };
+
+        let mut spans = vec![
+            Span::styled(prefix.to_string(), if i == 0 { prefix_style } else { Style::default() }),
+            Span::styled(text_line.to_string(), text_style),
+        ];
+
+        if is_last {
+            spans.push(Span::styled(cursor.to_string(), text_style));
+        }
+
+        lines.push(Line::from(spans));
+    }
+
     lines
 }
 

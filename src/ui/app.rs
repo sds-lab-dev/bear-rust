@@ -1,7 +1,7 @@
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
-use crossterm::event::{KeyCode, KeyEvent};
+use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
 use super::error::UiError;
 
@@ -19,6 +19,7 @@ pub struct ChatMessage {
 
 enum InputMode {
     WorkspaceConfirm,
+    RequirementsInput,
     Done,
 }
 
@@ -27,11 +28,13 @@ pub struct App {
     input_mode: InputMode,
     pub input_buffer: String,
     pub confirmed_workspace: Option<PathBuf>,
+    pub confirmed_requirements: Option<String>,
     pub should_quit: bool,
     pub cursor_visible: bool,
     cursor_blink_at: Instant,
     current_directory: PathBuf,
     pub scroll_offset: u16,
+    keyboard_enhancement_enabled: bool,
 }
 
 impl App {
@@ -53,11 +56,13 @@ impl App {
             input_mode: InputMode::WorkspaceConfirm,
             input_buffer: String::new(),
             confirmed_workspace: None,
+            confirmed_requirements: None,
             should_quit: false,
             cursor_visible: true,
             cursor_blink_at: Instant::now(),
             current_directory,
             scroll_offset: 0,
+            keyboard_enhancement_enabled: false,
         })
     }
 
@@ -66,6 +71,7 @@ impl App {
 
         match self.input_mode {
             InputMode::WorkspaceConfirm => self.handle_workspace_confirm(key_event),
+            InputMode::RequirementsInput => self.handle_requirements_input(key_event),
             InputMode::Done => self.handle_done(key_event),
         }
     }
@@ -90,13 +96,27 @@ impl App {
         self.scroll_offset = self.scroll_offset.saturating_sub(1);
     }
 
+    pub fn set_keyboard_enhancement_enabled(&mut self, enabled: bool) {
+        self.keyboard_enhancement_enabled = enabled;
+    }
+
     pub fn is_waiting_for_input(&self) -> bool {
-        matches!(self.input_mode, InputMode::WorkspaceConfirm)
+        matches!(
+            self.input_mode,
+            InputMode::WorkspaceConfirm | InputMode::RequirementsInput
+        )
     }
 
     pub fn help_text(&self) -> &str {
         match self.input_mode {
             InputMode::WorkspaceConfirm => "[Enter] 확인  [Esc] 종료",
+            InputMode::RequirementsInput => {
+                if self.keyboard_enhancement_enabled {
+                    "[Enter] 제출  [Shift+Enter] 줄바꿈  [Esc] 종료"
+                } else {
+                    "[Enter] 제출  [Alt+Enter] 줄바꿈  [Esc] 종료"
+                }
+            }
             InputMode::Done => "[Esc] 종료",
         }
     }
@@ -124,7 +144,28 @@ impl App {
                 ));
                 self.confirmed_workspace = Some(workspace);
                 self.input_buffer.clear();
-                self.input_mode = InputMode::Done;
+                self.transition_to_requirements_input();
+            }
+            KeyCode::Backspace => {
+                self.input_buffer.pop();
+            }
+            KeyCode::Esc => {
+                self.should_quit = true;
+            }
+            KeyCode::Char(c) => {
+                self.input_buffer.push(c);
+            }
+            _ => {}
+        }
+    }
+
+    fn handle_requirements_input(&mut self, key_event: KeyEvent) {
+        match key_event.code {
+            KeyCode::Enter if self.is_newline_modifier(key_event.modifiers) => {
+                self.input_buffer.push('\n');
+            }
+            KeyCode::Enter => {
+                self.submit_requirements();
             }
             KeyCode::Backspace => {
                 self.input_buffer.pop();
@@ -142,6 +183,32 @@ impl App {
     fn handle_done(&mut self, key_event: KeyEvent) {
         if key_event.code == KeyCode::Esc {
             self.should_quit = true;
+        }
+    }
+
+    fn transition_to_requirements_input(&mut self) {
+        self.add_system_message("구현할 요구사항을 입력하세요. Shitft + Enter로 여러 줄 입력이 가능합니다.");
+        self.input_mode = InputMode::RequirementsInput;
+    }
+
+    fn submit_requirements(&mut self) {
+        let requirements = self.input_buffer.trim().to_string();
+        if requirements.is_empty() {
+            return;
+        }
+
+        self.add_user_message(&requirements);
+        self.confirmed_requirements = Some(requirements);
+        self.input_buffer.clear();
+        self.add_system_message("요구사항이 접수되었습니다. 잠시만 기다려 주세요.");
+        self.input_mode = InputMode::Done;
+    }
+
+    fn is_newline_modifier(&self, modifiers: KeyModifiers) -> bool {
+        if self.keyboard_enhancement_enabled {
+            modifiers.contains(KeyModifiers::SHIFT)
+        } else {
+            modifiers.contains(KeyModifiers::ALT)
         }
     }
 
