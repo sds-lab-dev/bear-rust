@@ -88,28 +88,8 @@ Clarification Q&A log so far (may be empty). Each entry is the assistant's quest
 {{QA_LOG_TEXT}}
 >>>
 
-Your output MUST conform to the following JSON Schema:
-```json
-{
-  "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://example.com/schemas/clarification-questions-min.schema.json",
-  "title": "Clarification Questions",
-  "type": "object",
-  "additionalProperties": false,
-  "required": ["questions"],
-  "properties": {
-    "questions": {
-      "type": "array",
-      "minItems": 3,
-      "maxItems": 5,
-      "items": {
-        "type": "string",
-        "minLength": 5
-      }
-    }
-  }
-}
-```"#;
+Your output MUST conform to the given JSON Schema.
+"#;
 
 pub fn build_user_prompt(original_request: &str, qa_log: &[QaRound]) -> String {
     let qa_log_text = if qa_log.is_empty() {
@@ -127,12 +107,7 @@ pub fn build_user_prompt(original_request: &str, qa_log: &[QaRound]) -> String {
 /// minItems: 0으로 설정하여 "질문 없음"(빈 배열) 응답을 허용한다.
 pub fn clarification_schema() -> serde_json::Value {
     serde_json::json!({
-        "$schema": "https://json-schema.org/draft/2020-12/schema",
-        "$id": "https://example.com/schemas/clarification-questions-min.schema.json",
-        "title": "Clarification Questions",
         "type": "object",
-        "additionalProperties": false,
-        "required": ["questions"],
         "properties": {
             "questions": {
                 "type": "array",
@@ -143,7 +118,9 @@ pub fn clarification_schema() -> serde_json::Value {
                     "minLength": 5
                 }
             }
-        }
+        },
+        "required": ["questions"],  
+        "additionalProperties": false
     })
 }
 

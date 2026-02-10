@@ -17,6 +17,51 @@ pub struct ClaudeCodeRequest {
     pub output_schema: serde_json::Value,
 }
 
+#[derive(Debug)]
+struct ParsedOutput<T> {
+    result: T,
+    session_id: String,
+}
+
+fn parse_cli_output<T: DeserializeOwned>(
+    stdout: &[u8],
+) -> Result<ParsedOutput<T>, ClaudeCodeClientError> {
+    // CLI 출력에서 메시지 배열을 추출한다. 표준 출력 형식은 JSON 배열이지만,
+    // 단일 객체가 올 수도 있으므로 둘 다 처리한다.
+    let messages: Vec<serde_json::Value> = match serde_json::from_slice(stdout) {
+        Ok(messages) => messages,
+        Err(_) => {
+            let single: serde_json::Value = serde_json::from_slice(stdout)?;
+            vec![single]
+        }
+    };
+
+    let result_value = messages
+        .into_iter()
+        .rev()
+        .find(|msg| msg.get("type").and_then(|v| v.as_str()) == Some("result"))
+        .ok_or(ClaudeCodeClientError::NoResultMessage)?;
+
+    let response: CliResponse = serde_json::from_value(result_value)?;
+    if response.is_error {
+        return Err(ClaudeCodeClientError::CliReturnedError {
+            message: response.result.unwrap_or_default(),
+        });
+    }
+
+    let output_value = match response.structured_output {
+        Some(value) => value,
+        None => return Err(ClaudeCodeClientError::MissingStructuredOutput),
+    };
+
+    let result: T = serde_json::from_value(output_value)?;
+
+    Ok(ParsedOutput {
+        result,
+        session_id: response.session_id,
+    })
+}
+
 pub struct ClaudeCodeClient {
     binary_path: PathBuf,
     api_key: String,
@@ -115,33 +160,197 @@ impl ClaudeCodeClient {
             });
         }
 
-        // CLI는 JSON 배열 형태로 여러 메시지를 출력한다. 그 중 "type": "result"인
-        // 마지막 요소만 추출해서 파싱한다.
-        let messages: Vec<serde_json::Value> = serde_json::from_slice(&output.stdout)?;
-        let result_value = messages
-            .into_iter()
-            .rev()
-            .find(|msg| msg.get("type").and_then(|v| v.as_str()) == Some("result"))
-            .ok_or(ClaudeCodeClientError::NoResultMessage)?;
+        let command_session_id = new_session_id
+            .as_deref()
+            .or(self.session_id.as_deref())
+            .unwrap_or("unknown");
+        write_debug_log(request, command_session_id, &output.stdout);
 
-        let response: CliResponse = serde_json::from_value(result_value)?;
-        if response.is_error {
-            return Err(ClaudeCodeClientError::CliReturnedError {
-                message: response.result.unwrap_or_default(),
-            });
-        }
+        let parsed: ParsedOutput<T> = parse_cli_output(&output.stdout)?;
 
-        // 최초 실행이었다면 세션 ID를 저장해둔다.
         if new_session_id.is_some() {
-            self.session_id = Some(response.session_id);
+            self.session_id = Some(parsed.session_id);
         }
 
-        let structured_output = response
-            .structured_output
-            .ok_or(ClaudeCodeClientError::MissingStructuredOutput)?;
+        Ok(parsed.result)
+    }
+}
 
-        let result: T = serde_json::from_value(structured_output)?;
+fn write_debug_log(request: &ClaudeCodeRequest, session_id: &str, cli_stdout: &[u8]) {
+    let path = format!("/tmp/bear-{}.log", session_id);
+    let system_prompt = request.system_prompt.as_deref().unwrap_or("");
+    let cli_output = String::from_utf8_lossy(cli_stdout);
 
-        Ok(result)
+    let content = format!(
+        "<SYSTEM_PROMPT>\n{}\n</SYSTEM_PROMPT>\n\n<USER_PROMPT>\n{}\n</USER_PROMPT>\n\n<CLAUDE_CODE_CLI_OUTPUT>\n{}\n</CLAUDE_CODE_CLI_OUTPUT>\n",
+        system_prompt,
+        request.user_prompt,
+        cli_output,
+    );
+
+    // 디버그 로그 기록 실패는 무시한다.
+    let _ = std::fs::write(&path, content);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde::Deserialize;
+
+    #[derive(Debug, Deserialize, PartialEq)]
+    struct TestOutput {
+        answer: String,
+    }
+
+    fn make_result_message(
+        session_id: &str,
+        is_error: bool,
+        result_text: Option<&str>,
+        structured_output: Option<serde_json::Value>,
+    ) -> serde_json::Value {
+        let mut msg = serde_json::json!({
+            "type": "result",
+            "session_id": session_id,
+            "is_error": is_error,
+        });
+        if let Some(text) = result_text {
+            msg["result"] = serde_json::Value::String(text.to_string());
+        }
+        if let Some(output) = structured_output {
+            msg["structured_output"] = output;
+        }
+        msg
+    }
+
+    fn make_json_array_output(messages: &[serde_json::Value]) -> Vec<u8> {
+        serde_json::to_vec(messages).unwrap()
+    }
+
+    #[test]
+    fn parse_json_array_with_result_message() {
+        let messages = vec![
+            serde_json::json!({"type": "system", "subtype": "init", "session_id": "sess-1"}),
+            serde_json::json!({"type": "assistant", "message": {"role": "assistant"}}),
+            make_result_message(
+                "sess-1",
+                false,
+                Some("hello"),
+                Some(serde_json::json!({"answer": "hello"})),
+            ),
+        ];
+        let stdout = make_json_array_output(&messages);
+
+        let parsed: ParsedOutput<TestOutput> = parse_cli_output(&stdout).unwrap();
+
+        assert_eq!(parsed.result, TestOutput { answer: "hello".to_string() });
+        assert_eq!(parsed.session_id, "sess-1");
+    }
+
+    #[test]
+    fn parse_single_result_object() {
+        let message = make_result_message(
+            "sess-2",
+            false,
+            Some("world"),
+            Some(serde_json::json!({"answer": "world"})),
+        );
+        let stdout = serde_json::to_vec(&message).unwrap();
+
+        let parsed: ParsedOutput<TestOutput> = parse_cli_output(&stdout).unwrap();
+
+        assert_eq!(parsed.result, TestOutput { answer: "world".to_string() });
+        assert_eq!(parsed.session_id, "sess-2");
+    }
+
+    #[test]
+    fn error_when_no_result_message() {
+        let messages = vec![
+            serde_json::json!({"type": "system", "subtype": "init"}),
+            serde_json::json!({"type": "assistant", "message": {}}),
+        ];
+        let stdout = make_json_array_output(&messages);
+
+        let err = parse_cli_output::<TestOutput>(&stdout).unwrap_err();
+
+        assert!(
+            matches!(err, ClaudeCodeClientError::NoResultMessage),
+            "expected NoResultMessage, got: {err}",
+        );
+    }
+
+    #[test]
+    fn fallback_to_result_text_when_structured_output_missing() {
+        let messages = vec![
+            make_result_message(
+                "sess-3",
+                false,
+                Some(r#"{"answer": "from result text"}"#),
+                None,
+            ),
+        ];
+        let stdout = make_json_array_output(&messages);
+
+        let parsed: ParsedOutput<TestOutput> = parse_cli_output(&stdout).unwrap();
+
+        assert_eq!(parsed.result, TestOutput { answer: "from result text".to_string() });
+    }
+
+    #[test]
+    fn error_when_both_structured_output_and_result_text_missing() {
+        let messages = vec![
+            make_result_message("sess-3", false, None, None),
+        ];
+        let stdout = make_json_array_output(&messages);
+
+        let err = parse_cli_output::<TestOutput>(&stdout).unwrap_err();
+
+        assert!(
+            matches!(err, ClaudeCodeClientError::MissingStructuredOutput),
+            "expected MissingStructuredOutput, got: {err}",
+        );
+    }
+
+    #[test]
+    fn error_when_result_text_is_not_valid_json() {
+        let messages = vec![
+            make_result_message("sess-3", false, Some("plain text, not json"), None),
+        ];
+        let stdout = make_json_array_output(&messages);
+
+        let err = parse_cli_output::<TestOutput>(&stdout).unwrap_err();
+
+        assert!(
+            matches!(err, ClaudeCodeClientError::MissingStructuredOutput),
+            "expected MissingStructuredOutput, got: {err}",
+        );
+    }
+
+    #[test]
+    fn error_when_cli_returned_error() {
+        let messages = vec![
+            make_result_message("sess-4", true, Some("something went wrong"), None),
+        ];
+        let stdout = make_json_array_output(&messages);
+
+        let err = parse_cli_output::<TestOutput>(&stdout).unwrap_err();
+
+        match err {
+            ClaudeCodeClientError::CliReturnedError { message } => {
+                assert_eq!(message, "something went wrong");
+            }
+            other => panic!("expected CliReturnedError, got: {other}"),
+        }
+    }
+
+    #[test]
+    fn error_when_invalid_json() {
+        let stdout = b"this is not json";
+
+        let err = parse_cli_output::<TestOutput>(stdout).unwrap_err();
+
+        assert!(
+            matches!(err, ClaudeCodeClientError::JsonParsingFailed { .. }),
+            "expected JsonParsingFailed, got: {err}",
+        );
     }
 }
