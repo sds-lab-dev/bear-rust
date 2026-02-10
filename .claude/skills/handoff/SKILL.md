@@ -23,16 +23,19 @@ You are generating a HANDOFF DOCUMENT for the next task. The goal is to reset th
 6) Clearly separate: facts vs decisions vs recommendations. Recommendations must be explicitly labeled and must include the rationale.
 
 ## Output path of the handoff document
-- Write the document to: `<WORKSPACE_ROOT>/.HANDOFF-<SUBJECT>-<YYYYMMDDHHMMSS>.md`
+- Write the document to: `<WORKSPACE_ROOT>/.HANDOFF-<SUBJECT>.md`
     - where:
       - `<WORKSPACE_ROOT>`: absolute path of the workspace directory.
       - `<SUBJECT>`: short subject for the current task that should be consist of only alphanumeric, `-`, and `_` characters.
-      - `<YYYYMMDDHHMMSS>`: current timestamp in `Asia/Seoul` timezone that should be formatted as `YYYYMMDDHHMMSS`, and obtain by running a Python script that reads the actual local system time.
   Example:
-    - `/workspace/.HANDOFF-tui-skeleton-20260210134521.md`
-    - `/workspace/.HANDOFF-fix-broken-api-2026011031209.md`
-- If the path already exists, create a new file by appending "-v2", "-v3", etc. Do NOT overwrite.
-
+    - `/workspace/.HANDOFF-tui-skeleton.md`
+    - `/workspace/.HANDOFF-fix-broken-api.md`
+- If the path already exists, create a new file by appending `-v2`, `-v3`, etc.
+  Example:
+    - If `/workspace/.HANDOFF-tui-skeleton.md` exists, create `/workspace/.HANDOFF-tui-skeleton-v2.md`
+    - If `/workspace/.HANDOFF-tui-skeleton-v2.md` also exists, create `/workspace/.HANDOFF-tui-skeleton-v3.md`
+    - Continue this pattern until you find a non-existing file name.
+- Do NOT overwrite existing handoff documents EVER.
 
 # Handoff document template
 
