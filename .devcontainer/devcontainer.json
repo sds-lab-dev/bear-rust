@@ -36,7 +36,8 @@
         "IS_SANDBOX": "1",
         "ENABLE_LSP_TOOL": "1",
         "CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS": "1",
-        "CLAUDE_CODE_DISABLE_FEEDBACK_SURVEY": "1"
+        "CLAUDE_CODE_DISABLE_FEEDBACK_SURVEY": "1",
+        "CLAUDE_CODE_ADDITIONAL_DIRECTORIES_CLAUDE_MD": "1"
     },
     "initializeCommand": "${localWorkspaceFolder}/.devcontainer/initialize_script.sh \"${localWorkspaceFolder}\"",
     "postCreateCommand": "${containerWorkspaceFolder}/.devcontainer/post_create_script.sh \"${containerWorkspaceFolder}\"",
