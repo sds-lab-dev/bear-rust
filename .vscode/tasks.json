@@ -49,7 +49,10 @@
                 }
             },
             "dependsOn": "Build",
-            "dependsOrder": "sequence"
+            "dependsOrder": "sequence",
+            "runOptions": {
+                "instanceLimit": 100
+            }
         },
         {
             "type": "shell",
