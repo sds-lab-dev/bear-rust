@@ -487,8 +487,13 @@ pub struct PlanJournal {
 }
 
 impl PlanJournal {
-    pub fn new(workspace: &Path, session_name: &str, cli_session_id: &str) -> io::Result<Self> {
-        let dir = workspace.join(".bear").join(session_name);
+    pub fn new(
+        workspace: &Path,
+        date_dir: &str,
+        session_name: &str,
+        cli_session_id: &str,
+    ) -> io::Result<Self> {
+        let dir = workspace.join(".bear").join(date_dir).join(session_name);
         fs::create_dir_all(&dir)?;
 
         let file_path = dir.join("plan.journal.md");
@@ -618,17 +623,18 @@ mod tests {
 
     #[test]
     fn build_revision_prompt_contains_feedback_and_journal_path() {
-        let journal_path = Path::new("/workspace/.bear/sess-1/plan.journal.md");
+        let journal_path = Path::new("/workspace/.bear/20250101/sess-1/plan.journal.md");
         let prompt = build_plan_revision_prompt("Please add error handling section", journal_path);
 
         assert!(prompt.contains("Please add error handling section"));
-        assert!(prompt.contains("/workspace/.bear/sess-1/plan.journal.md"));
+        assert!(prompt.contains("/workspace/.bear/20250101/sess-1/plan.journal.md"));
     }
 
     #[test]
     fn plan_journal_creates_directory_and_file() {
         let temp_dir = TempDir::new().unwrap();
-        let journal = PlanJournal::new(temp_dir.path(), "test-session", "cli-sess-001").unwrap();
+        let journal =
+            PlanJournal::new(temp_dir.path(), "20250101", "test-session", "cli-sess-001").unwrap();
 
         journal.append_approved_spec("# Spec Content").unwrap();
 
@@ -641,7 +647,8 @@ mod tests {
     #[test]
     fn plan_journal_appends_multiple_entries() {
         let temp_dir = TempDir::new().unwrap();
-        let journal = PlanJournal::new(temp_dir.path(), "test-session", "cli-sess-002").unwrap();
+        let journal =
+            PlanJournal::new(temp_dir.path(), "20250101", "test-session", "cli-sess-002").unwrap();
 
         journal.append_approved_spec("# Spec").unwrap();
         journal.append_plan_draft("# Draft Plan").unwrap();
@@ -670,11 +677,13 @@ mod tests {
     #[test]
     fn plan_journal_file_path_structure() {
         let temp_dir = TempDir::new().unwrap();
-        let journal = PlanJournal::new(temp_dir.path(), "abc-123", "cli-sess-003").unwrap();
+        let journal =
+            PlanJournal::new(temp_dir.path(), "20250101", "abc-123", "cli-sess-003").unwrap();
 
         let expected = temp_dir
             .path()
             .join(".bear")
+            .join("20250101")
             .join("abc-123")
             .join("plan.journal.md");
         assert_eq!(journal.file_path(), expected);
@@ -684,7 +693,8 @@ mod tests {
     fn plan_journal_entries_have_cli_session_id_delimiter() {
         let temp_dir = TempDir::new().unwrap();
         let cli_session_id = "my-cli-session-id-456";
-        let journal = PlanJournal::new(temp_dir.path(), "my-session", cli_session_id).unwrap();
+        let journal =
+            PlanJournal::new(temp_dir.path(), "20250101", "my-session", cli_session_id).unwrap();
 
         journal.append_approved_spec("spec content").unwrap();
         journal.append_plan_draft("plan content").unwrap();
@@ -710,7 +720,8 @@ mod tests {
     #[test]
     fn plan_journal_approved_plan_has_no_delimiter() {
         let temp_dir = TempDir::new().unwrap();
-        let journal = PlanJournal::new(temp_dir.path(), "my-session", "cli-sess-789").unwrap();
+        let journal =
+            PlanJournal::new(temp_dir.path(), "20250101", "my-session", "cli-sess-789").unwrap();
 
         journal.append_approved_plan("final plan").unwrap();
 

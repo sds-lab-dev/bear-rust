@@ -1,5 +1,6 @@
 use std::path::Path;
 
+use chrono::{FixedOffset, Utc};
 use serde::Deserialize;
 
 #[derive(Debug, Deserialize)]
@@ -80,18 +81,24 @@ pub fn sanitize_session_name(raw: &str) -> String {
     }
 }
 
-/// 워크스페이스의 `.bear/` 디렉토리 안에 동일한 이름이 이미 존재하면
-/// `-2`, `-3`, ... 접미사를 붙여 고유한 이름을 반환한다.
-pub fn ensure_unique_name(workspace: &Path, base_name: &str) -> String {
-    let bear_dir = workspace.join(".bear");
+/// Asia/Seoul (KST, UTC+9) 타임존 기준 오늘 날짜를 `YYYYMMDD` 형식으로 반환한다.
+pub fn today_date_string() -> String {
+    let kst = FixedOffset::east_opt(9 * 3600).expect("valid KST offset");
+    Utc::now().with_timezone(&kst).format("%Y%m%d").to_string()
+}
 
-    if !bear_dir.join(base_name).exists() {
+/// 워크스페이스의 `.bear/<date_dir>/` 디렉토리 안에 동일한 이름이 이미 존재하면
+/// `-2`, `-3`, ... 접미사를 붙여 고유한 이름을 반환한다.
+pub fn ensure_unique_name(workspace: &Path, date_dir: &str, base_name: &str) -> String {
+    let bear_date_dir = workspace.join(".bear").join(date_dir);
+
+    if !bear_date_dir.join(base_name).exists() {
         return base_name.to_string();
     }
 
     for suffix in 2.. {
         let candidate = format!("{}-{}", base_name, suffix);
-        if !bear_dir.join(&candidate).exists() {
+        if !bear_date_dir.join(&candidate).exists() {
             return candidate;
         }
     }
@@ -174,25 +181,41 @@ mod tests {
     }
 
     #[test]
+    fn today_date_string_has_valid_format() {
+        let date = today_date_string();
+        assert_eq!(date.len(), 8);
+        assert!(date.chars().all(|c| c.is_ascii_digit()));
+    }
+
+    #[test]
     fn unique_name_when_no_conflict() {
         let tmp = tempfile::tempdir().unwrap();
-        assert_eq!(ensure_unique_name(tmp.path(), "my-session"), "my-session");
+        assert_eq!(
+            ensure_unique_name(tmp.path(), "20250101", "my-session"),
+            "my-session"
+        );
     }
 
     #[test]
     fn unique_name_appends_suffix_on_conflict() {
         let tmp = tempfile::tempdir().unwrap();
-        std::fs::create_dir_all(tmp.path().join(".bear/my-session")).unwrap();
-        assert_eq!(ensure_unique_name(tmp.path(), "my-session"), "my-session-2");
+        std::fs::create_dir_all(tmp.path().join(".bear/20250101/my-session")).unwrap();
+        assert_eq!(
+            ensure_unique_name(tmp.path(), "20250101", "my-session"),
+            "my-session-2"
+        );
     }
 
     #[test]
     fn unique_name_skips_existing_suffixes() {
         let tmp = tempfile::tempdir().unwrap();
-        let bear = tmp.path().join(".bear");
-        std::fs::create_dir_all(bear.join("my-session")).unwrap();
-        std::fs::create_dir_all(bear.join("my-session-2")).unwrap();
-        std::fs::create_dir_all(bear.join("my-session-3")).unwrap();
-        assert_eq!(ensure_unique_name(tmp.path(), "my-session"), "my-session-4");
+        let date_dir = tmp.path().join(".bear/20250101");
+        std::fs::create_dir_all(date_dir.join("my-session")).unwrap();
+        std::fs::create_dir_all(date_dir.join("my-session-2")).unwrap();
+        std::fs::create_dir_all(date_dir.join("my-session-3")).unwrap();
+        assert_eq!(
+            ensure_unique_name(tmp.path(), "20250101", "my-session"),
+            "my-session-4"
+        );
     }
 }

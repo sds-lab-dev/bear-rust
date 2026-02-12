@@ -134,8 +134,8 @@ pub struct SpecJournal {
 }
 
 impl SpecJournal {
-    pub fn new(workspace: &Path, session_name: &str) -> io::Result<Self> {
-        let dir = workspace.join(".bear").join(session_name);
+    pub fn new(workspace: &Path, date_dir: &str, session_name: &str) -> io::Result<Self> {
+        let dir = workspace.join(".bear").join(date_dir).join(session_name);
         fs::create_dir_all(&dir)?;
 
         let file_path = dir.join("spec.journal.md");
@@ -259,17 +259,17 @@ mod tests {
 
     #[test]
     fn build_revision_prompt_contains_feedback_and_journal_path() {
-        let journal_path = Path::new("/workspace/.bear/sess-1/spec.journal.md");
+        let journal_path = Path::new("/workspace/.bear/20250101/sess-1/spec.journal.md");
         let prompt = build_revision_prompt("Please add error handling section", journal_path);
 
         assert!(prompt.contains("Please add error handling section"));
-        assert!(prompt.contains("/workspace/.bear/sess-1/spec.journal.md"));
+        assert!(prompt.contains("/workspace/.bear/20250101/sess-1/spec.journal.md"));
     }
 
     #[test]
     fn journal_creates_directory_and_file() {
         let temp_dir = TempDir::new().unwrap();
-        let journal = SpecJournal::new(temp_dir.path(), "test-session-123").unwrap();
+        let journal = SpecJournal::new(temp_dir.path(), "20250101", "test-session-123").unwrap();
 
         journal.append_user_request("Build something").unwrap();
 
@@ -282,7 +282,7 @@ mod tests {
     #[test]
     fn journal_appends_multiple_entries() {
         let temp_dir = TempDir::new().unwrap();
-        let journal = SpecJournal::new(temp_dir.path(), "test-session").unwrap();
+        let journal = SpecJournal::new(temp_dir.path(), "20250101", "test-session").unwrap();
 
         journal.append_user_request("Build a tool").unwrap();
         journal
@@ -310,9 +310,14 @@ mod tests {
     #[test]
     fn journal_file_path_structure() {
         let temp_dir = TempDir::new().unwrap();
-        let journal = SpecJournal::new(temp_dir.path(), "abc-123").unwrap();
+        let journal = SpecJournal::new(temp_dir.path(), "20250101", "abc-123").unwrap();
 
-        let expected = temp_dir.path().join(".bear").join("abc-123").join("spec.journal.md");
+        let expected = temp_dir
+            .path()
+            .join(".bear")
+            .join("20250101")
+            .join("abc-123")
+            .join("spec.journal.md");
         assert_eq!(journal.file_path(), expected);
     }
 }

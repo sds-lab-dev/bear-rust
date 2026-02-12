@@ -49,7 +49,7 @@ struct AgentThreadResult {
 }
 
 enum AgentStreamMessage {
-    SessionName(String),
+    SessionName { name: String, date_dir: String },
     StreamLine(String),
     Completed(AgentThreadResult),
 }
@@ -83,6 +83,7 @@ pub struct App {
     plan_clarification_questions: Vec<String>,
     approved_spec: Option<String>,
     session_name: Option<String>,
+    session_date_dir: Option<String>,
 }
 
 impl App {
@@ -128,6 +129,7 @@ impl App {
             plan_clarification_questions: Vec::new(),
             approved_spec: None,
             session_name: None,
+            session_date_dir: None,
         })
     }
 
@@ -227,8 +229,9 @@ impl App {
 
         loop {
             match receiver.try_recv() {
-                Ok(AgentStreamMessage::SessionName(name)) => {
+                Ok(AgentStreamMessage::SessionName { name, date_dir }) => {
                     self.session_name = Some(name);
+                    self.session_date_dir = Some(date_dir);
                 }
                 Ok(AgentStreamMessage::StreamLine(line)) => {
                     self.add_system_message(&line);
@@ -481,9 +484,10 @@ impl App {
         std::thread::spawn(move || {
             if needs_session_name {
                 let name = generate_session_name(&mut client, &original_request);
-                let name = session_naming::ensure_unique_name(&workspace, &name);
+                let date_dir = session_naming::today_date_string();
+                let name = session_naming::ensure_unique_name(&workspace, &date_dir, &name);
                 client.reset_session();
-                let _ = sender.send(AgentStreamMessage::SessionName(name));
+                let _ = sender.send(AgentStreamMessage::SessionName { name, date_dir });
             }
 
             let request = ClaudeCodeRequest {
@@ -635,7 +639,12 @@ impl App {
             None => return,
         };
 
-        match SpecJournal::new(&workspace, &session_name) {
+        let date_dir = match &self.session_date_dir {
+            Some(d) => d.clone(),
+            None => return,
+        };
+
+        match SpecJournal::new(&workspace, &date_dir, &session_name) {
             Ok(journal) => {
                 // Phase 1 데이터를 소급 기록한다.
                 if let Some(request) = &self.confirmed_requirements {
@@ -810,6 +819,11 @@ impl App {
             None => return,
         };
 
+        let date_dir = match &self.session_date_dir {
+            Some(d) => d.clone(),
+            None => return,
+        };
+
         let cli_session_id = self
             .claude_client
             .as_ref()
@@ -817,7 +831,7 @@ impl App {
             .unwrap_or("unknown")
             .to_string();
 
-        match PlanJournal::new(&workspace, &session_name, &cli_session_id) {
+        match PlanJournal::new(&workspace, &date_dir, &session_name, &cli_session_id) {
             Ok(journal) => {
                 // 승인된 스펙을 plan journal에 소급 기록한다.
                 if let Some(spec) = &self.approved_spec {
