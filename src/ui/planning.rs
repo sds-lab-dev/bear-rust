@@ -297,13 +297,18 @@ When you finish you MUST produce an output in Markdown format that includes:
    - Interfaces or contracts (APIs, CLI, config, data model) where relevant.
    - Error handling and edge cases.
 
-4. **Implementation Steps**
-   - A numbered, ordered sequence of steps.
-   - For each step, specify concrete file-level changes:
+4. **Implementation**
+   - A numbered, ordered sequence of tasks.
+   - For each task, specify concrete file-level changes:
+     - Purpose of the change (1–2 sentences)
      - File path(s)
      - Location within the file (function/class/fixture/test name, or the nearest existing section to anchor the change)
      - The exact action: add / modify / remove (and what)
-   - Keep steps sized for small, reviewable commits.
+     - New symbols to introduce (if any)
+     - Current logic flow in pseudocode (if existing logic is being modified)
+     - New logic flow in pseudocode
+     - Dependencies (an adjacency list of prerequisite task IDs, or "none")
+   - Keep tasks sized for small, reviewable commits.
 
 5. **Testing & Validation**
    - Unit tests and integration tests to add or update.
@@ -318,11 +323,11 @@ When you finish you MUST produce an output in Markdown format that includes:
 7. **Implementation Notes**
    - Commands to run (build, test, lint), but do not execute them yourself.
    - Any repository-specific conventions discovered (naming, folder layout, patterns).
-   - If any step is ambiguous, add brief pseudo-diff descriptions (what will be inserted/changed near which code area) to make the plan directly actionable.
+   - If any task is ambiguous, add brief pseudo-diff descriptions (what will be inserted/changed near which code area) to make the plan directly actionable.
 ```
 
 **Mandatory detail level:**
-- Always include both a high-level summary (in **Overview**) and a detailed, file-by-file implementation plan (in **Implementation Steps**).
+- Always include both a high-level summary (in **Overview**) and a detailed, file-by-file implementation plan (in **Implementation**).
 - Do not replace the detailed plan with a summary."#
 }
 
