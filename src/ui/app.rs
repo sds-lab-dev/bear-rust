@@ -7,6 +7,7 @@ use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use crate::claude_code_client::{ClaudeCodeClient, ClaudeCodeRequest};
 use crate::config::Config;
 use super::clarification::{self, ClarificationQuestions, QaRound};
+use super::planning::{self, PlanJournal, PlanResponseType, PlanWritingResponse};
 use super::spec_writing::{self, SpecJournal, SpecResponseType, SpecWritingResponse};
 use super::error::UiError;
 use super::renderer::{USER_PREFIX, wrap_text_by_char_width};
@@ -30,12 +31,15 @@ enum InputMode {
     ClarificationAnswer,
     SpecClarificationAnswer,
     SpecFeedback,
+    PlanClarificationAnswer,
+    PlanFeedback,
     Done,
 }
 
 enum AgentOutcome {
     Clarification(ClarificationQuestions),
     SpecWriting(SpecWritingResponse),
+    Planning(PlanWritingResponse),
 }
 
 struct AgentThreadResult {
@@ -72,6 +76,10 @@ pub struct App {
     journal: Option<SpecJournal>,
     last_spec_draft: Option<String>,
     spec_clarification_questions: Vec<String>,
+    plan_journal: Option<PlanJournal>,
+    last_plan_draft: Option<String>,
+    plan_clarification_questions: Vec<String>,
+    approved_spec: Option<String>,
 }
 
 impl App {
@@ -112,6 +120,10 @@ impl App {
             journal: None,
             last_spec_draft: None,
             spec_clarification_questions: Vec::new(),
+            plan_journal: None,
+            last_plan_draft: None,
+            plan_clarification_questions: Vec::new(),
+            approved_spec: None,
         })
     }
 
@@ -150,6 +162,18 @@ impl App {
                     self.handle_multiline_input(key_event, Self::submit_spec_feedback);
                 }
             }
+            InputMode::PlanClarificationAnswer => {
+                self.handle_multiline_input(key_event, Self::submit_plan_clarification_answer);
+            }
+            InputMode::PlanFeedback => {
+                if key_event.code == KeyCode::Char('a')
+                    && key_event.modifiers.contains(KeyModifiers::CONTROL)
+                {
+                    self.approve_plan();
+                } else {
+                    self.handle_multiline_input(key_event, Self::submit_plan_feedback);
+                }
+            }
             InputMode::AgentThinking | InputMode::Done => {
                 if key_event.code == KeyCode::Esc {
                     self.should_quit = true;
@@ -169,7 +193,9 @@ impl App {
             InputMode::RequirementsInput
             | InputMode::ClarificationAnswer
             | InputMode::SpecClarificationAnswer
-            | InputMode::SpecFeedback => {
+            | InputMode::SpecFeedback
+            | InputMode::PlanClarificationAnswer
+            | InputMode::PlanFeedback => {
                 let cleaned = text.replace("\r\n", "\n").replace('\r', "\n");
                 self.insert_text_at_cursor(&cleaned);
             }
@@ -208,6 +234,9 @@ impl App {
                         }
                         Ok(AgentOutcome::SpecWriting(response)) => {
                             self.handle_spec_response(response);
+                        }
+                        Ok(AgentOutcome::Planning(response)) => {
+                            self.handle_plan_response(response);
                         }
                         Err(error_message) => self.handle_agent_error(error_message),
                     }
@@ -252,6 +281,8 @@ impl App {
                 | InputMode::ClarificationAnswer
                 | InputMode::SpecClarificationAnswer
                 | InputMode::SpecFeedback
+                | InputMode::PlanClarificationAnswer
+                | InputMode::PlanFeedback
         )
     }
 
@@ -274,14 +305,15 @@ impl App {
             InputMode::WorkspaceConfirm => "[Enter] Confirm  [PgUp/PgDn] Scroll  [Esc] Quit",
             InputMode::RequirementsInput
             | InputMode::ClarificationAnswer
-            | InputMode::SpecClarificationAnswer => {
+            | InputMode::SpecClarificationAnswer
+            | InputMode::PlanClarificationAnswer => {
                 if self.keyboard_enhancement_enabled {
                     "[Enter] Submit  [Shift+Enter] New line  [PgUp/PgDn] Scroll  [Esc] Quit"
                 } else {
                     "[Enter] Submit  [Alt+Enter] New line  [PgUp/PgDn] Scroll  [Esc] Quit"
                 }
             }
-            InputMode::SpecFeedback => {
+            InputMode::SpecFeedback | InputMode::PlanFeedback => {
                 if self.keyboard_enhancement_enabled {
                     "[Enter] Submit feedback  [Ctrl+A] Approve  [Shift+Enter] New line  [PgUp/PgDn] Scroll  [Esc] Quit"
                 } else {
@@ -640,14 +672,194 @@ impl App {
     }
 
     fn approve_spec(&mut self) {
-        if let Some(spec) = &self.last_spec_draft {
-            if let Some(journal) = &self.journal {
-                let _ = journal.append_approved_spec(spec);
+        let spec = match &self.last_spec_draft {
+            Some(spec) => spec.clone(),
+            None => {
+                self.add_system_message("승인할 스펙이 없습니다.");
+                return;
             }
-            self.add_system_message("스펙이 승인되었습니다.");
-        } else {
-            self.add_system_message("승인할 스펙이 없습니다.");
+        };
+
+        if let Some(journal) = &self.journal {
+            let _ = journal.append_approved_spec(&spec);
         }
+
+        self.approved_spec = Some(spec);
+        self.add_system_message("스펙이 승인되었습니다. 개발 계획을 작성합니다.");
+        self.start_plan_writing_query(true);
+    }
+
+    fn start_plan_writing_query(&mut self, is_initial: bool) {
+        let mut client = self.claude_client.take().expect("client must be available");
+
+        if is_initial {
+            client.reset_session();
+        }
+
+        let approved_spec = self.approved_spec.clone().unwrap_or_default();
+        let plan_journal_path = self.plan_journal.as_ref().map(|j| j.file_path().to_path_buf());
+        let user_feedback = if is_initial {
+            None
+        } else {
+            self.messages
+                .iter()
+                .rev()
+                .find(|m| matches!(m.role, MessageRole::User))
+                .map(|m| m.content.clone())
+        };
+
+        let (sender, receiver) = mpsc::channel();
+        self.agent_result_receiver = Some(receiver);
+        self.input_mode = InputMode::AgentThinking;
+        self.thinking_started_at = Instant::now();
+
+        std::thread::spawn(move || {
+            let user_prompt = if is_initial {
+                planning::build_initial_plan_prompt(&approved_spec)
+            } else {
+                let feedback = user_feedback.unwrap_or_default();
+                let path = plan_journal_path.as_deref().unwrap_or(Path::new("unknown"));
+                planning::build_plan_revision_prompt(&feedback, path)
+            };
+
+            let request = ClaudeCodeRequest {
+                system_prompt: Some(planning::system_prompt().to_string()),
+                user_prompt,
+                model: None,
+                output_schema: planning::plan_writing_schema(),
+            };
+
+            let stream_sender = sender.clone();
+            let outcome = client
+                .query_streaming::<PlanWritingResponse, _>(&request, |line| {
+                    let _ = stream_sender.send(AgentStreamMessage::StreamLine(line));
+                })
+                .map(AgentOutcome::Planning)
+                .map_err(|err| err.to_string());
+
+            let _ = sender.send(AgentStreamMessage::Completed(AgentThreadResult {
+                client,
+                outcome,
+            }));
+        });
+    }
+
+    fn handle_plan_response(&mut self, response: PlanWritingResponse) {
+        self.ensure_plan_journal();
+
+        match response.response_type {
+            PlanResponseType::PlanDraft => {
+                let draft = response.plan_draft.unwrap_or_default();
+
+                if let Some(journal) = &self.plan_journal {
+                    let _ = journal.append_plan_draft(&draft);
+                }
+
+                self.add_system_message(&format!(
+                    "개발 계획 드래프트가 작성되었습니다:\n\n{}\n\n피드백을 입력하거나, Ctrl+A를 눌러 승인하세요.",
+                    draft
+                ));
+                self.last_plan_draft = Some(draft);
+                self.input_mode = InputMode::PlanFeedback;
+            }
+            PlanResponseType::ClarifyingQuestions => {
+                let questions = response.clarifying_questions.unwrap_or_default();
+
+                if let Some(journal) = &self.plan_journal {
+                    let _ = journal.append_clarifying_questions(&questions);
+                }
+
+                let mut message = String::from("개발 계획 작성을 위해 추가 정보가 필요합니다.\n");
+                for (i, question) in questions.iter().enumerate() {
+                    message.push_str(&format!("\n{}. {}", i + 1, question));
+                }
+
+                self.plan_clarification_questions = questions;
+                self.add_system_message(&message);
+                self.input_mode = InputMode::PlanClarificationAnswer;
+            }
+        }
+    }
+
+    fn ensure_plan_journal(&mut self) {
+        if self.plan_journal.is_some() {
+            return;
+        }
+
+        let workspace = match &self.confirmed_workspace {
+            Some(w) => w.clone(),
+            None => return,
+        };
+
+        let session_id = self
+            .claude_client
+            .as_ref()
+            .and_then(|c| c.session_id())
+            .unwrap_or("unknown")
+            .to_string();
+
+        match PlanJournal::new(&workspace, &session_id) {
+            Ok(journal) => {
+                // 승인된 스펙을 plan journal에 소급 기록한다.
+                if let Some(spec) = &self.approved_spec {
+                    let _ = journal.append_approved_spec(spec);
+                }
+                self.plan_journal = Some(journal);
+            }
+            Err(err) => {
+                self.add_system_message(&format!("플랜 저널 파일 생성 실패: {}", err));
+            }
+        }
+    }
+
+    fn submit_plan_clarification_answer(&mut self) {
+        let answer = self.input_buffer.trim().to_string();
+        if answer.is_empty() {
+            return;
+        }
+
+        self.add_user_message(&answer);
+        self.clear_input();
+
+        if let Some(journal) = &self.plan_journal {
+            let _ = journal.append_user_answers(&answer);
+        }
+
+        self.add_system_message("답변을 반영하여 개발 계획을 작성합니다.");
+        self.start_plan_writing_query(false);
+    }
+
+    fn submit_plan_feedback(&mut self) {
+        let feedback = self.input_buffer.trim().to_string();
+        if feedback.is_empty() {
+            return;
+        }
+
+        self.add_user_message(&feedback);
+        self.clear_input();
+
+        if let Some(journal) = &self.plan_journal {
+            let _ = journal.append_user_feedback(&feedback);
+        }
+
+        self.add_system_message("피드백을 반영하여 개발 계획을 수정합니다.");
+        self.start_plan_writing_query(false);
+    }
+
+    fn approve_plan(&mut self) {
+        let plan = match &self.last_plan_draft {
+            Some(plan) => plan.clone(),
+            None => {
+                self.add_system_message("승인할 개발 계획이 없습니다.");
+                return;
+            }
+        };
+
+        if let Some(journal) = &self.plan_journal {
+            let _ = journal.append_approved_plan(&plan);
+        }
+
+        self.add_system_message("개발 계획이 승인되었습니다.");
         self.input_mode = InputMode::Done;
     }
 
