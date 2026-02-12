@@ -84,9 +84,15 @@ IMPORTANT:
 - The spec describes WHAT the system must do, not HOW it is implemented internally.
 - The spec MUST be testable with clear acceptance criteria.
 - Write the spec in Korean.
+- Read the spec journal file at the path below to understand the full context of prior requirements, Q&A, and previous spec drafts.
 
 Output MUST be valid JSON conforming to the provided JSON Schema.
 Output MUST contain ONLY the JSON object, with no extra text.
+
+Spec journal file path:
+<<<
+{{JOURNAL_PATH}}
+>>>
 
 User feedback:
 <<<
@@ -101,8 +107,10 @@ pub fn build_initial_spec_prompt(original_request: &str, qa_log: &[QaRound]) -> 
         .replace("{{QA_LOG_TEXT}}", &qa_log_text)
 }
 
-pub fn build_revision_prompt(user_feedback: &str) -> String {
-    REVISION_PROMPT_TEMPLATE.replace("{{USER_FEEDBACK}}", user_feedback)
+pub fn build_revision_prompt(user_feedback: &str, journal_path: &Path) -> String {
+    REVISION_PROMPT_TEMPLATE
+        .replace("{{JOURNAL_PATH}}", &journal_path.display().to_string())
+        .replace("{{USER_FEEDBACK}}", user_feedback)
 }
 
 fn format_qa_log(qa_log: &[QaRound]) -> String {
@@ -135,8 +143,7 @@ impl SpecJournal {
         Ok(Self { file_path })
     }
 
-    #[cfg(test)]
-    fn file_path(&self) -> &Path {
+    pub fn file_path(&self) -> &Path {
         &self.file_path
     }
 
@@ -251,10 +258,12 @@ mod tests {
     }
 
     #[test]
-    fn build_revision_prompt_contains_feedback() {
-        let prompt = build_revision_prompt("Please add error handling section");
+    fn build_revision_prompt_contains_feedback_and_journal_path() {
+        let journal_path = Path::new("/workspace/.bear/sess-1/spec.journal.md");
+        let prompt = build_revision_prompt("Please add error handling section", journal_path);
 
         assert!(prompt.contains("Please add error handling section"));
+        assert!(prompt.contains("/workspace/.bear/sess-1/spec.journal.md"));
     }
 
     #[test]

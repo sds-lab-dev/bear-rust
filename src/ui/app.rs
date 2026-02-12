@@ -488,6 +488,7 @@ impl App {
 
         let original_request = self.confirmed_requirements.clone().unwrap();
         let qa_log = self.qa_log.clone();
+        let journal_path = self.journal.as_ref().map(|j| j.file_path().to_path_buf());
         let user_feedback = if is_initial {
             None
         } else {
@@ -508,7 +509,8 @@ impl App {
                 spec_writing::build_initial_spec_prompt(&original_request, &qa_log)
             } else {
                 let feedback = user_feedback.unwrap_or_default();
-                spec_writing::build_revision_prompt(&feedback)
+                let path = journal_path.as_deref().unwrap_or(Path::new("unknown"));
+                spec_writing::build_revision_prompt(&feedback, path)
             };
 
             let request = ClaudeCodeRequest {
