@@ -41,6 +41,7 @@ apt-get \
     rustup \
     jq \
     bc \
+    ripgrep \
     procps && \
 rm -rf /var/lib/apt/lists/*
 
