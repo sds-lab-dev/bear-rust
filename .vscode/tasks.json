@@ -12,8 +12,7 @@
             "presentation": {
                 "panel": "shared",
                 "clear": false,
-                "close": false,
-                "reveal": "never"
+                "close": false
             },
             "options": {
                 "shell": {
@@ -38,8 +37,7 @@
             "presentation": {
                 "panel": "shared",
                 "clear": false,
-                "close": false,
-                "reveal": "never"
+                "close": false
             },
             "options": {
                 "shell": {
@@ -64,8 +62,7 @@
             "presentation": {
                 "panel": "shared",
                 "clear": false,
-                "close": false,
-                "reveal": "never"
+                "close": false
             },
             "options": {
                 "shell": {
