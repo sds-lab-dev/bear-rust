@@ -119,7 +119,7 @@ impl TerminalWriter {
                 }
                 queue!(self.stdout, style::Print(text))?;
                 if *bold {
-                    queue!(self.stdout, style::SetAttribute(style::Attribute::NoBold))?;
+                    queue!(self.stdout, style::SetAttribute(style::Attribute::NormalIntensity))?;
                 }
             }
 
@@ -163,7 +163,7 @@ impl TerminalWriter {
                         style::SetForegroundColor(prefix_color),
                         style::SetAttribute(style::Attribute::Bold),
                         style::Print(prefix),
-                        style::SetAttribute(style::Attribute::NoBold),
+                        style::SetAttribute(style::Attribute::NormalIntensity),
                     )?;
                     is_first = false;
                 } else {
@@ -176,7 +176,7 @@ impl TerminalWriter {
                 }
                 queue!(self.stdout, style::Print(&visual_line))?;
                 if is_bold_line {
-                    queue!(self.stdout, style::SetAttribute(style::Attribute::NoBold))?;
+                    queue!(self.stdout, style::SetAttribute(style::Attribute::NormalIntensity))?;
                 }
                 queue!(
                     self.stdout,
@@ -208,7 +208,7 @@ impl TerminalWriter {
                 style::SetForegroundColor(style::Color::Cyan),
                 style::SetAttribute(style::Attribute::Bold),
                 style::Print(SYSTEM_PREFIX),
-                style::SetAttribute(style::Attribute::NoBold),
+                style::SetAttribute(style::Attribute::NormalIntensity),
                 style::SetForegroundColor(style::Color::Yellow),
                 style::Print(app.thinking_indicator()),
                 style::ResetColor,
@@ -274,7 +274,7 @@ fn write_input_lines(
                     style::SetForegroundColor(style::Color::Green),
                     style::SetAttribute(style::Attribute::Bold),
                     style::Print(USER_PREFIX),
-                    style::SetAttribute(style::Attribute::NoBold),
+                    style::SetAttribute(style::Attribute::NormalIntensity),
                 )?;
             } else {
                 let padding = " ".repeat(USER_PREFIX.len());
