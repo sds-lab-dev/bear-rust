@@ -1,7 +1,7 @@
 use std::io::{Stdout, Write, stdout};
 
 use crossterm::{cursor, queue, style, terminal};
-use unicode_width::UnicodeWidthChar;
+use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
 use super::app::{App, ChatMessage, MessageRole};
 
@@ -24,6 +24,7 @@ const RIGHT_COLUMN_START: usize = 3;
 pub struct TerminalWriter {
     stdout: Stdout,
     live_area_line_count: u16,
+    cursor_lines_above_bottom: u16,
     committed_message_count: usize,
     banner_committed: bool,
     terminal_width: u16,
@@ -35,6 +36,7 @@ impl TerminalWriter {
         Ok(Self {
             stdout: stdout(),
             live_area_line_count: 0,
+            cursor_lines_above_bottom: 0,
             committed_message_count: 0,
             banner_committed: false,
             terminal_width: width,
@@ -71,6 +73,10 @@ impl TerminalWriter {
             return Ok(());
         }
 
+        if self.cursor_lines_above_bottom > 0 {
+            queue!(self.stdout, cursor::MoveDown(self.cursor_lines_above_bottom))?;
+        }
+
         if self.live_area_line_count > 1 {
             queue!(self.stdout, cursor::MoveUp(self.live_area_line_count - 1))?;
         }
@@ -80,6 +86,7 @@ impl TerminalWriter {
             terminal::Clear(terminal::ClearType::FromCursorDown),
         )?;
         self.live_area_line_count = 0;
+        self.cursor_lines_above_bottom = 0;
         Ok(())
     }
 
@@ -192,16 +199,17 @@ impl TerminalWriter {
 
     fn draw_live_area(&mut self, app: &App) -> Result<(), std::io::Error> {
         let mut line_count: u16 = 0;
+        let mut cursor_position_on_screen: Option<(u16, u16)> = None;
 
         if app.is_waiting_for_input() {
-            let cursor_char = if app.cursor_visible { "█" } else { " " };
-            line_count += write_input_lines(
+            let result = write_input_lines(
                 &mut self.stdout,
                 &app.input_buffer,
                 app.cursor_position,
-                cursor_char,
                 self.terminal_width,
             )?;
+            line_count += result.line_count;
+            cursor_position_on_screen = Some((result.cursor_row, result.cursor_screen_col));
         } else if app.is_thinking() {
             queue!(
                 self.stdout,
@@ -231,25 +239,50 @@ impl TerminalWriter {
         )?;
         line_count += 2;
 
+        if let Some((cursor_row, cursor_col)) = cursor_position_on_screen {
+            let bottom_row = line_count - 1;
+            let lines_up = bottom_row - cursor_row;
+            if lines_up > 0 {
+                queue!(self.stdout, cursor::MoveUp(lines_up))?;
+            }
+            queue!(
+                self.stdout,
+                cursor::MoveToColumn(cursor_col),
+                cursor::Show,
+            )?;
+            self.cursor_lines_above_bottom = lines_up;
+        } else {
+            queue!(self.stdout, cursor::Hide)?;
+            self.cursor_lines_above_bottom = 0;
+        }
+
         self.live_area_line_count = line_count;
         Ok(())
     }
+}
+
+struct InputRenderResult {
+    line_count: u16,
+    cursor_row: u16,
+    cursor_screen_col: u16,
 }
 
 fn write_input_lines(
     stdout: &mut Stdout,
     input_buffer: &str,
     cursor_position: usize,
-    cursor_char: &str,
     max_width: u16,
-) -> Result<u16, std::io::Error> {
+) -> Result<InputRenderResult, std::io::Error> {
     let cursor_reserved = 1;
     let text_width = (max_width as usize).saturating_sub(USER_PREFIX.len() + cursor_reserved);
+    let prefix_display_width = USER_PREFIX.len() as u16;
 
     let logical_lines: Vec<&str> = input_buffer.split('\n').collect();
     let mut line_count: u16 = 0;
     let mut global_char_offset = 0;
     let mut is_first_visual_line = true;
+    let mut cursor_row: u16 = 0;
+    let mut cursor_screen_col: u16 = prefix_display_width;
 
     for (logical_idx, logical_line) in logical_lines.iter().enumerate() {
         let visual_lines = wrap_text_by_char_width(logical_line, text_width);
@@ -261,12 +294,16 @@ fn write_input_lines(
             let visual_start = global_char_offset + line_char_offset;
             let is_last_visual_of_logical = visual_idx == visual_line_count - 1;
 
-            let cursor_col = cursor_column_on_visual_line(
+            if let Some(col) = cursor_column_on_visual_line(
                 cursor_position,
                 visual_start,
                 visual_char_count,
                 is_last_visual_of_logical,
-            );
+            ) {
+                let before_cursor: String = visual_text.chars().take(col).collect();
+                cursor_row = line_count;
+                cursor_screen_col = prefix_display_width + before_cursor.width() as u16;
+            }
 
             if is_first_visual_line {
                 queue!(
@@ -281,22 +318,10 @@ fn write_input_lines(
                 queue!(stdout, style::Print(padding))?;
             }
 
-            queue!(stdout, style::SetForegroundColor(style::Color::Green))?;
-            if let Some(col) = cursor_col {
-                let before: String = visual_text.chars().take(col).collect();
-                let after: String = visual_text.chars().skip(col).collect();
-                queue!(
-                    stdout,
-                    style::Print(before),
-                    style::Print(cursor_char),
-                    style::Print(after),
-                )?;
-            } else {
-                queue!(stdout, style::Print(visual_text))?;
-            }
-
             queue!(
                 stdout,
+                style::SetForegroundColor(style::Color::Green),
+                style::Print(visual_text),
                 style::ResetColor,
                 style::Print("\r\n"),
             )?;
@@ -312,7 +337,11 @@ fn write_input_lines(
         }
     }
 
-    Ok(line_count)
+    Ok(InputRenderResult {
+        line_count,
+        cursor_row,
+        cursor_screen_col,
+    })
 }
 
 /// 커서가 이 visual line 위에 있으면 해당 컬럼을, 아니면 None을 반환.

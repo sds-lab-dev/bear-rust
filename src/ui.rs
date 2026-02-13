@@ -26,7 +26,12 @@ use renderer::TerminalWriter;
 
 pub fn run(config: Config) -> Result<(), UiError> {
     terminal::enable_raw_mode()?;
-    crossterm::execute!(stdout(), EnableBracketedPaste, cursor::Hide)?;
+    crossterm::execute!(
+        stdout(),
+        EnableBracketedPaste,
+        cursor::Hide,
+        cursor::SetCursorStyle::SteadyBlock,
+    )?;
 
     let keyboard_enhancement_enabled = terminal::supports_keyboard_enhancement()
         .unwrap_or(false);
@@ -76,7 +81,12 @@ pub fn run(config: Config) -> Result<(), UiError> {
         crossterm::execute!(stdout(), PopKeyboardEnhancementFlags)?;
     }
 
-    crossterm::execute!(stdout(), cursor::Show, DisableBracketedPaste)?;
+    crossterm::execute!(
+        stdout(),
+        cursor::Show,
+        cursor::SetCursorStyle::DefaultUserShape,
+        DisableBracketedPaste,
+    )?;
     terminal::disable_raw_mode()?;
 
     Ok(())

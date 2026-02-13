@@ -1,6 +1,6 @@
 use std::path::{Path, PathBuf};
 use std::sync::mpsc;
-use std::time::{Duration, Instant};
+use std::time::Instant;
 
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
@@ -12,8 +12,6 @@ use super::session_naming::{self, SessionNameResponse};
 use super::spec_writing::{self, SpecJournal, SpecResponseType, SpecWritingResponse};
 use super::error::UiError;
 use super::renderer::{USER_PREFIX, wrap_text_by_char_width};
-
-const CURSOR_BLINK_INTERVAL: Duration = Duration::from_millis(500);
 
 pub enum MessageRole {
     System,
@@ -63,8 +61,6 @@ pub struct App {
     pub confirmed_workspace: Option<PathBuf>,
     pub confirmed_requirements: Option<String>,
     pub should_quit: bool,
-    pub cursor_visible: bool,
-    cursor_blink_at: Instant,
     current_directory: PathBuf,
     keyboard_enhancement_enabled: bool,
     config: Config,
@@ -107,8 +103,6 @@ impl App {
             confirmed_workspace: None,
             confirmed_requirements: None,
             should_quit: false,
-            cursor_visible: true,
-            cursor_blink_at: Instant::now(),
             current_directory,
             keyboard_enhancement_enabled: false,
             config,
@@ -130,8 +124,6 @@ impl App {
     }
 
     pub fn handle_key_event(&mut self, key_event: KeyEvent) {
-        self.reset_cursor_blink();
-
         match self.input_mode {
             InputMode::WorkspaceConfirm => self.handle_workspace_confirm(key_event),
             InputMode::RequirementsInput => {
@@ -173,8 +165,6 @@ impl App {
     }
 
     pub fn handle_paste(&mut self, text: String) {
-        self.reset_cursor_blink();
-
         match self.input_mode {
             InputMode::WorkspaceConfirm => {
                 let cleaned = text.replace("\r\n", " ").replace(['\r', '\n'], " ");
@@ -194,15 +184,7 @@ impl App {
     }
 
     pub fn tick(&mut self) {
-        self.tick_cursor_blink();
         self.tick_agent_result();
-    }
-
-    fn tick_cursor_blink(&mut self) {
-        if self.cursor_blink_at.elapsed() >= CURSOR_BLINK_INTERVAL {
-            self.cursor_visible = !self.cursor_visible;
-            self.cursor_blink_at = Instant::now();
-        }
     }
 
     fn tick_agent_result(&mut self) {
@@ -246,11 +228,6 @@ impl App {
                 }
             }
         }
-    }
-
-    fn reset_cursor_blink(&mut self) {
-        self.cursor_visible = true;
-        self.cursor_blink_at = Instant::now();
     }
 
     pub fn set_keyboard_enhancement_enabled(&mut self, enabled: bool) {
