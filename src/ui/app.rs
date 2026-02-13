@@ -781,14 +781,7 @@ impl App {
             None => return,
         };
 
-        let cli_session_id = self
-            .claude_client
-            .as_ref()
-            .and_then(|c| c.session_id())
-            .unwrap_or("unknown")
-            .to_string();
-
-        match PlanJournal::new(&workspace, &date_dir, &session_name, &cli_session_id) {
+        match PlanJournal::new(&workspace, &date_dir, &session_name) {
             Ok(journal) => {
                 // 승인된 스펙을 plan journal에 소급 기록한다.
                 if let Some(spec) = &self.approved_spec {

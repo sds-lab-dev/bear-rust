@@ -191,10 +191,11 @@ impl SpecJournal {
             .append(true)
             .open(&self.file_path)?;
 
+        writeln!(file, "<<<BEGIN")?;
         writeln!(file, "<{}>", tag)?;
         writeln!(file, "{}", content)?;
         writeln!(file, "</{}>", tag)?;
-        writeln!(file)?;
+        writeln!(file, ">>>END")?;
 
         Ok(())
     }

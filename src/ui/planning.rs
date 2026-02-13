@@ -483,25 +483,16 @@ pub fn build_plan_revision_prompt(user_feedback: &str, plan_journal_path: &Path)
 
 pub struct PlanJournal {
     file_path: PathBuf,
-    session_id: String,
 }
 
 impl PlanJournal {
-    pub fn new(
-        workspace: &Path,
-        date_dir: &str,
-        session_name: &str,
-        cli_session_id: &str,
-    ) -> io::Result<Self> {
+    pub fn new(workspace: &Path, date_dir: &str, session_name: &str) -> io::Result<Self> {
         let dir = workspace.join(".bear").join(date_dir).join(session_name);
         fs::create_dir_all(&dir)?;
 
         let file_path = dir.join("plan.journal.md");
 
-        Ok(Self {
-            file_path,
-            session_id: cli_session_id.to_string(),
-        })
+        Ok(Self { file_path })
     }
 
     pub fn file_path(&self) -> &Path {
@@ -535,17 +526,7 @@ impl PlanJournal {
     }
 
     pub fn append_approved_plan(&self, plan: &str) -> io::Result<()> {
-        let mut file = OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(&self.file_path)?;
-
-        writeln!(file, "<APPROVED_PLAN>")?;
-        writeln!(file, "{}", plan)?;
-        writeln!(file, "</APPROVED_PLAN>")?;
-        writeln!(file)?;
-
-        Ok(())
+        self.append_with_delimiter("APPROVED_PLAN", plan)
     }
 
     fn append_with_delimiter(&self, tag: &str, content: &str) -> io::Result<()> {
@@ -554,11 +535,11 @@ impl PlanJournal {
             .append(true)
             .open(&self.file_path)?;
 
-        writeln!(file, "{}", self.session_id)?;
+        writeln!(file, "<<<BEGIN")?;
         writeln!(file, "<{}>", tag)?;
         writeln!(file, "{}", content)?;
         writeln!(file, "</{}>", tag)?;
-        writeln!(file)?;
+        writeln!(file, ">>>END")?;
 
         Ok(())
     }
@@ -634,7 +615,7 @@ mod tests {
     fn plan_journal_creates_directory_and_file() {
         let temp_dir = TempDir::new().unwrap();
         let journal =
-            PlanJournal::new(temp_dir.path(), "20250101", "test-session", "cli-sess-001").unwrap();
+            PlanJournal::new(temp_dir.path(), "20250101", "test-session").unwrap();
 
         journal.append_approved_spec("# Spec Content").unwrap();
 
@@ -648,7 +629,7 @@ mod tests {
     fn plan_journal_appends_multiple_entries() {
         let temp_dir = TempDir::new().unwrap();
         let journal =
-            PlanJournal::new(temp_dir.path(), "20250101", "test-session", "cli-sess-002").unwrap();
+            PlanJournal::new(temp_dir.path(), "20250101", "test-session").unwrap();
 
         journal.append_approved_spec("# Spec").unwrap();
         journal.append_plan_draft("# Draft Plan").unwrap();
@@ -677,8 +658,7 @@ mod tests {
     #[test]
     fn plan_journal_file_path_structure() {
         let temp_dir = TempDir::new().unwrap();
-        let journal =
-            PlanJournal::new(temp_dir.path(), "20250101", "abc-123", "cli-sess-003").unwrap();
+        let journal = PlanJournal::new(temp_dir.path(), "20250101", "abc-123").unwrap();
 
         let expected = temp_dir
             .path()
@@ -690,11 +670,10 @@ mod tests {
     }
 
     #[test]
-    fn plan_journal_entries_have_cli_session_id_delimiter() {
+    fn plan_journal_entries_have_begin_end_delimiter() {
         let temp_dir = TempDir::new().unwrap();
-        let cli_session_id = "my-cli-session-id-456";
         let journal =
-            PlanJournal::new(temp_dir.path(), "20250101", "my-session", cli_session_id).unwrap();
+            PlanJournal::new(temp_dir.path(), "20250101", "my-session").unwrap();
 
         journal.append_approved_spec("spec content").unwrap();
         journal.append_plan_draft("plan content").unwrap();
@@ -702,35 +681,34 @@ mod tests {
         let content = fs::read_to_string(journal.file_path()).unwrap();
         let lines: Vec<&str> = content.lines().collect();
 
-        // 첫 번째 블록: cli_session_id 구분자 → <APPROVED_SPEC>
-        assert_eq!(lines[0], cli_session_id);
+        assert_eq!(lines[0], "<<<BEGIN");
         assert_eq!(lines[1], "<APPROVED_SPEC>");
+        assert_eq!(lines[2], "spec content");
+        assert_eq!(lines[3], "</APPROVED_SPEC>");
+        assert_eq!(lines[4], ">>>END");
 
-        // 두 번째 블록도 cli_session_id 구분자로 시작
-        let second_delimiter_index = lines
-            .iter()
-            .enumerate()
-            .skip(1)
-            .find(|(_, line)| **line == cli_session_id)
-            .map(|(i, _)| i)
-            .expect("second delimiter should exist");
-        assert_eq!(lines[second_delimiter_index + 1], "<PLAN_DRAFT>");
+        assert_eq!(lines[5], "<<<BEGIN");
+        assert_eq!(lines[6], "<PLAN_DRAFT>");
+        assert_eq!(lines[7], "plan content");
+        assert_eq!(lines[8], "</PLAN_DRAFT>");
+        assert_eq!(lines[9], ">>>END");
     }
 
     #[test]
-    fn plan_journal_approved_plan_has_no_delimiter() {
+    fn plan_journal_approved_plan_has_delimiter() {
         let temp_dir = TempDir::new().unwrap();
         let journal =
-            PlanJournal::new(temp_dir.path(), "20250101", "my-session", "cli-sess-789").unwrap();
+            PlanJournal::new(temp_dir.path(), "20250101", "my-session").unwrap();
 
         journal.append_approved_plan("final plan").unwrap();
 
         let content = fs::read_to_string(journal.file_path()).unwrap();
         let lines: Vec<&str> = content.lines().collect();
 
-        // APPROVED_PLAN 앞에는 session_id 구분자가 없어야 한다.
-        assert_eq!(lines[0], "<APPROVED_PLAN>");
-        assert_eq!(lines[1], "final plan");
-        assert_eq!(lines[2], "</APPROVED_PLAN>");
+        assert_eq!(lines[0], "<<<BEGIN");
+        assert_eq!(lines[1], "<APPROVED_PLAN>");
+        assert_eq!(lines[2], "final plan");
+        assert_eq!(lines[3], "</APPROVED_PLAN>");
+        assert_eq!(lines[4], ">>>END");
     }
 }
