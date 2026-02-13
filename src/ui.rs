@@ -12,28 +12,23 @@ pub use error::UiError;
 use std::io::stdout;
 use std::time::Duration;
 
+use crossterm::cursor;
 use crossterm::event::{
     DisableBracketedPaste, EnableBracketedPaste,
     Event, KeyEventKind, KeyboardEnhancementFlags,
     PopKeyboardEnhancementFlags, PushKeyboardEnhancementFlags,
 };
-use crossterm::terminal::{self, EnterAlternateScreen, LeaveAlternateScreen};
-use ratatui::Terminal;
-use ratatui::backend::CrosstermBackend;
+use crossterm::terminal;
 
 use crate::config::Config;
 use app::App;
+use renderer::TerminalWriter;
 
 pub fn run(config: Config) -> Result<(), UiError> {
     terminal::enable_raw_mode()?;
-    crossterm::execute!(stdout(), EnterAlternateScreen, EnableBracketedPaste)?;
+    crossterm::execute!(stdout(), EnableBracketedPaste, cursor::Hide)?;
 
-    let backend = CrosstermBackend::new(stdout());
-    let mut terminal = Terminal::new(backend)?;
-
-    let mut app = App::new(config)?;
-
-    let keyboard_enhancement_enabled = crossterm::terminal::supports_keyboard_enhancement()
+    let keyboard_enhancement_enabled = terminal::supports_keyboard_enhancement()
         .unwrap_or(false);
 
     if keyboard_enhancement_enabled {
@@ -43,11 +38,16 @@ pub fn run(config: Config) -> Result<(), UiError> {
         )?;
     }
 
+    let mut app = App::new(config)?;
     app.set_keyboard_enhancement_enabled(keyboard_enhancement_enabled);
+
+    let mut writer = TerminalWriter::new()?;
+    app.terminal_width = writer.terminal_width();
 
     loop {
         app.tick();
-        terminal.draw(|frame| renderer::render(frame, &mut app))?;
+        app.terminal_width = writer.terminal_width();
+        writer.render(&app)?;
 
         if let Some(event) = event::poll_event(Duration::from_millis(100))? {
             match event {
@@ -56,6 +56,10 @@ pub fn run(config: Config) -> Result<(), UiError> {
                 }
                 Event::Paste(text) => {
                     app.handle_paste(text);
+                }
+                Event::Resize(width, _) => {
+                    writer.handle_resize(width);
+                    app.terminal_width = width;
                 }
                 _ => {}
             }
@@ -66,11 +70,13 @@ pub fn run(config: Config) -> Result<(), UiError> {
         }
     }
 
+    writer.finalize()?;
+
     if keyboard_enhancement_enabled {
         crossterm::execute!(stdout(), PopKeyboardEnhancementFlags)?;
     }
 
-    crossterm::execute!(stdout(), DisableBracketedPaste, LeaveAlternateScreen)?;
+    crossterm::execute!(stdout(), cursor::Show, DisableBracketedPaste)?;
     terminal::disable_raw_mode()?;
 
     Ok(())

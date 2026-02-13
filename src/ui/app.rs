@@ -60,14 +60,12 @@ pub struct App {
     pub input_buffer: String,
     pub cursor_position: usize,
     pub terminal_width: u16,
-    pub terminal_height: u16,
     pub confirmed_workspace: Option<PathBuf>,
     pub confirmed_requirements: Option<String>,
     pub should_quit: bool,
     pub cursor_visible: bool,
     cursor_blink_at: Instant,
     current_directory: PathBuf,
-    pub scroll_offset: u16,
     keyboard_enhancement_enabled: bool,
     config: Config,
     claude_client: Option<ClaudeCodeClient>,
@@ -106,14 +104,12 @@ impl App {
             input_buffer: String::new(),
             cursor_position: 0,
             terminal_width: 80,
-            terminal_height: 24,
             confirmed_workspace: None,
             confirmed_requirements: None,
             should_quit: false,
             cursor_visible: true,
             cursor_blink_at: Instant::now(),
             current_directory,
-            scroll_offset: 0,
             keyboard_enhancement_enabled: false,
             config,
             claude_client: None,
@@ -135,18 +131,6 @@ impl App {
 
     pub fn handle_key_event(&mut self, key_event: KeyEvent) {
         self.reset_cursor_blink();
-
-        match key_event.code {
-            KeyCode::PageUp => {
-                self.scroll_up();
-                return;
-            }
-            KeyCode::PageDown => {
-                self.scroll_down();
-                return;
-            }
-            _ => {}
-        }
 
         match self.input_mode {
             InputMode::WorkspaceConfirm => self.handle_workspace_confirm(key_event),
@@ -269,16 +253,6 @@ impl App {
         self.cursor_blink_at = Instant::now();
     }
 
-    pub fn scroll_up(&mut self) {
-        let page_size = self.terminal_height.saturating_sub(2);
-        self.scroll_offset = self.scroll_offset.saturating_add(page_size);
-    }
-
-    pub fn scroll_down(&mut self) {
-        let page_size = self.terminal_height.saturating_sub(2);
-        self.scroll_offset = self.scroll_offset.saturating_sub(page_size);
-    }
-
     pub fn set_keyboard_enhancement_enabled(&mut self, enabled: bool) {
         self.keyboard_enhancement_enabled = enabled;
     }
@@ -312,25 +286,25 @@ impl App {
 
     pub fn help_text(&self) -> &str {
         match self.input_mode {
-            InputMode::WorkspaceConfirm => "[Enter] Confirm  [PgUp/PgDn] Scroll  [Esc] Quit",
+            InputMode::WorkspaceConfirm => "[Enter] Confirm  [Esc] Quit",
             InputMode::RequirementsInput
             | InputMode::ClarificationAnswer
             | InputMode::SpecClarificationAnswer
             | InputMode::PlanClarificationAnswer => {
                 if self.keyboard_enhancement_enabled {
-                    "[Enter] Submit  [Shift+Enter] New line  [PgUp/PgDn] Scroll  [Esc] Quit"
+                    "[Enter] Submit  [Shift+Enter] New line  [Esc] Quit"
                 } else {
-                    "[Enter] Submit  [Alt+Enter] New line  [PgUp/PgDn] Scroll  [Esc] Quit"
+                    "[Enter] Submit  [Alt+Enter] New line  [Esc] Quit"
                 }
             }
             InputMode::SpecFeedback | InputMode::PlanFeedback => {
                 if self.keyboard_enhancement_enabled {
-                    "[Enter] Submit feedback  [Ctrl+A] Approve  [Shift+Enter] New line  [PgUp/PgDn] Scroll  [Esc] Quit"
+                    "[Enter] Submit feedback  [Ctrl+A] Approve  [Shift+Enter] New line  [Esc] Quit"
                 } else {
-                    "[Enter] Submit feedback  [Ctrl+A] Approve  [Alt+Enter] New line  [PgUp/PgDn] Scroll  [Esc] Quit"
+                    "[Enter] Submit feedback  [Ctrl+A] Approve  [Alt+Enter] New line  [Esc] Quit"
                 }
             }
-            InputMode::AgentThinking | InputMode::Done => "[PgUp/PgDn] Scroll  [Esc] Quit",
+            InputMode::AgentThinking | InputMode::Done => "[Esc] Quit",
         }
     }
 
@@ -362,6 +336,9 @@ impl App {
             KeyCode::Backspace => {
                 self.delete_char_before_cursor();
             }
+            KeyCode::Delete => {
+                self.delete_char_at_cursor();
+            }
             KeyCode::Left => {
                 self.move_cursor_left();
             }
@@ -392,6 +369,9 @@ impl App {
             }
             KeyCode::Backspace => {
                 self.delete_char_before_cursor();
+            }
+            KeyCode::Delete => {
+                self.delete_char_at_cursor();
             }
             KeyCode::Left => {
                 self.move_cursor_left();
@@ -925,6 +905,15 @@ impl App {
         self.input_buffer.remove(byte_pos);
     }
 
+    fn delete_char_at_cursor(&mut self) {
+        let char_count = self.input_buffer.chars().count();
+        if self.cursor_position >= char_count {
+            return;
+        }
+        let byte_pos = char_to_byte_index(&self.input_buffer, self.cursor_position);
+        self.input_buffer.remove(byte_pos);
+    }
+
     fn clear_input(&mut self) {
         self.input_buffer.clear();
         self.cursor_position = 0;
@@ -1019,7 +1008,6 @@ impl App {
             role: MessageRole::System,
             content: content.to_string(),
         });
-        self.scroll_offset = 0;
     }
 
     fn add_user_message(&mut self, content: &str) {
@@ -1027,7 +1015,6 @@ impl App {
             role: MessageRole::User,
             content: content.to_string(),
         });
-        self.scroll_offset = 0;
     }
 }
 
