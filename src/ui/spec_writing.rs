@@ -91,15 +91,48 @@ IMPORTANT:
 Output MUST be valid JSON conforming to the provided JSON Schema.
 Output MUST contain ONLY the JSON object, with no extra text.
 
+User feedback:
+<<<
+{{USER_FEEDBACK}}
+>>>
+
 Spec journal file path:
 <<<
 {{JOURNAL_PATH}}
 >>>
 
-User feedback:
-<<<
-{{USER_FEEDBACK}}
->>>"#;
+Spec journal file format:
+```
+<<<BEGIN-<UUID_v4>
+<USER_REQUEST>
+...original user request text verbatim...
+</USER_REQUEST>
+>>>END-<UUID_v4>
+<<<BEGIN-<UUID_v4>
+<SPEC_DRAFT>
+...spec draft text verbatim...
+</SPEC_DRAFT>
+>>>END-<UUID_v4>
+<<<BEGIN-<UUID_v4>
+<USER_FEEDBACK>
+...user feedback text verbatim...
+</USER_FEEDBACK>
+>>>END-<UUID_v4>
+<<<BEGIN-<UUID_v4>
+<APPROVED_SPEC>
+...approved spec text verbatim...
+</APPROVED_SPEC>
+>>>END-<UUID_v4>
+```
+
+where:
+- `BEGIN` and `END` markers denote the start and end of each section.
+- `<UUID_v4>` is a UUID version 4 unique identifier for each section.
+- `<UUID_v4>` pairs must match for `BEGIN` and `END` markers of each section.
+
+`<USER_REQUEST>` and `<APPROVED_SPEC>` sections appear ONLY ONCE at the start and end of the journal.
+
+`<SPEC_DRAFT>` and `<USER_FEEDBACK>` sections MAY appear multiple times as the spec is revised and approved."#;
 
 pub fn build_initial_spec_prompt(original_request: &str, qa_log: &[QaRound]) -> String {
     let qa_log_text = format_qa_log(qa_log);

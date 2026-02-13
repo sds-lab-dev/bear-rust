@@ -463,15 +463,48 @@ Before outputting the revised plan, you MUST confirm:
 
 ---
 
+User feedback:
+<<<
+{{USER_FEEDBACK}}
+>>>
+
 Plan journal file path:
 <<<
 {{PLAN_JOURNAL_PATH}}
 >>>
 
-User feedback:
-<<<
-{{USER_FEEDBACK}}
->>>"#;
+Plan journal file format:
+```
+<<<BEGIN-<UUID_v4>
+<APPROVED_SPEC>
+...approved spec text verbatim...
+</APPROVED_SPEC>
+>>>END-<UUID_v4>
+<<<BEGIN-<UUID_v4>
+<PLAN_DRAFT>
+...plan draft text verbatim...
+</PLAN_DRAFT>
+>>>END-<UUID_v4>
+<<<BEGIN-<UUID_v4>
+<USER_FEEDBACK>
+...user feedback text verbatim...
+</USER_FEEDBACK>
+>>>END-<UUID_v4>
+<<<BEGIN-<UUID_v4>
+<APPROVED_PLAN>
+...approved plan text verbatim...
+</APPROVED_PLAN>
+>>>END-<UUID_v4>
+```
+
+where:
+- `BEGIN` and `END` markers denote the start and end of each section.
+- `<UUID_v4>` is a UUID version 4 unique identifier for each section.
+- `<UUID_v4>` pairs must match for `BEGIN` and `END` markers of each section.
+
+`<APPROVED_SPEC>` and `<APPROVED_PLAN>` sections appear ONLY ONCE at the start and end of the journal.
+
+`<PLAN_DRAFT>` and `<USER_FEEDBACK>` sections MAY appear multiple times as the plan is revised and approved."#;
 
 pub fn build_initial_plan_prompt(approved_spec: &str) -> String {
     INITIAL_PLAN_PROMPT_TEMPLATE.replace("{{APPROVED_SPEC}}", approved_spec)
