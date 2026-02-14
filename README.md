@@ -83,6 +83,9 @@ The Bear AI Developer application supports the following primary development flo
 - The Review Agent checks code quality, style, and whether functional requirements are satisfied, and if necessary sends revision requests to the Coding Agents.
 - Coding Agents apply the review feedback and modify the code, after which the Review Agent reviews the updated code again.
 - This loop continues until the code satisfies all review criteria or the maximum iterations (default: 5) are reached.
+- If the criteria does not meet after the maximum iterations:
+  - Approves the code as-is if it is reasonably close to the criteria and the remaining issues are minor.
+  - Otherwise, explains the blockers to the user and request a guidance on how to proceed.
 
 ## User feedback and approval loop
 - After all tasks in the development plan are completed and code review passes, the process requires the user's final approval.
@@ -102,14 +105,17 @@ The Bear AI Developer application supports the following primary development flo
 - Always answer in Korean.
 
 ## Coding conventions
-- When writing or modifying code, follow the project's existing coding conventions.
-- Do not add unnecessary comments if the code is self-explanatory on its own.
+- You MUST follow the coding conventions in order:
+  1. Follow the given instructions described below.
+  2. Follow the project's existing coding conventions unless explicitly stated in the given instructions.
+  3. Follow the idiomatic style of the programming language used in the project if no existing conventions are present and no explicit instructions are given.
+- Do NOT add unnecessary comments if the code is self-explanatory on its own.
   ```rust
   // Incorrect example
 
   let count = items.len(); // Counts the number of items
   ```
-- If it is not immediately obvious what the code does by reading it, you must add comments.
+- You MUST add comments if it is not immediately obvious what the code does by reading it.
   ```rust
   // Correct example
 
@@ -118,15 +124,24 @@ The Bear AI Developer application supports the following primary development flo
       .append_message(response.choices[0].message.clone())
       .map_err(|err| EmailAnalyzerError::InvalidRequest(err.to_string()))?;
   ```
-- Code readability is the highest priority. Performance or idiomatic language expression is a consideration only after readability is secured. If code written in multiple lines is easier to understand than a one-liner that uses syntactic sugar, you must choose the former.
-- Do not use abbreviations just to keep names short. Use long names as-is to improve readability, even if they are lengthy. Exceptions are allowed for universally understood abbreviations such as `db`, or widely used loop indices such as `i` or `j`.
-- If blocks, conditionals, loops, and similar constructs cause indentation nesting of three levels or more, you must refactor the structure immediately. Note that “three levels of indentation” is not a magic number. Depending on the case, even a single level of indentation can harm readability, so handle it appropriately on a case-by-case basis.
-- Every function must follow the single-responsibility principle and do only one thing. An exception is when the function’s purpose is orchestration by composing multiple components.
-- If a function or method exceeds 50 lines, consider refactoring; if it exceeds 100 lines, there is a high likelihood that multiple responsibilities are mixed together, so you should actively refactor it.
-- Large changes must be split into multiple smaller tasks and handled independently.
-- Do not touch files unrelated to the changes unnecessarily.
-- Do not prefer creating new types first; check whether the existing types in the codebase can be used before introducing new ones.
-- Do not avoid modifying the existing application structure. If the application already has "two eyes," do not take the easy route by attaching a "third eye" on the side; instead, modify the structure of the existing eyes so it can be done with only the two eyes.
+- Code readability is the highest priority.
+  - Performance or idiomatic language expression is a consideration only after readability is secured. 
+  - If code written in multiple lines is easier to understand than a one-liner that uses syntactic sugar, you must choose the former.
+- Do NOT use abbreviations just to keep names short.
+  - Use long names as-is to improve readability, even if they are lengthy. 
+  - Exceptions are allowed for universally understood abbreviations such as `db`, or widely used loop indices such as `i` or `j`.
+- You MUST refactor the structure immediately if blocks, conditionals, loops, and similar constructs cause indentation nesting of three levels or more. 
+  - Note that "three levels of indentation" is not a magic number. 
+  - Depending on the case, even a single level of indentation can harm readability, so handle it appropriately on a case-by-case basis.
+- Every function MUST follow the single-responsibility principle and do only one thing.
+  - An exception is when the function's purpose is orchestration by composing multiple components.
+- Long functions or methods are NOT allowed:
+  - If it exceeds 50 lines, you MUST consider refactoring.
+  - If it exceeds 100 lines, you MUST refactor it unless you can justify that it has a single, cohesive responsibility.
+- Do NOT prefer creating new types first; check whether the existing types in the codebase can be used before introducing new ones.
+- Do NOT avoid modifying the existing application structure.
+  - If the application already has "two eyes," do NOT take the easy route by attaching a "third eye" on the side.
+  - Instead, modify the structure of the existing eyes so it can be done with only the two eyes.
 
 ## Coding guardrails
 
@@ -166,14 +181,23 @@ If yes, simplify.
 **Touch only what you must. Clean up only your own mess.**
 
 When editing existing code:
-- Do NOT refactor unrelated code, comments, or formatting.
+- Do NOT refactor unrelated code, comments, naming, or formatting.
 - Match existing style and conventions.
-- Exception: if existing patterns cause correctness, security, or reliability issues in the area you touch, make the smallest fix needed and explain why.
+- Exception:
+  - If the code you touch (or its immediate dependencies) has a correctness bug, security weakness, or reliability hazard that affects the behavior of your change, fix it.
+  - If your change reveals or triggers a pre-existing build/test failure, type error, lint failure, or static-analysis issue in the area you touch, apply the minimal fix needed to restore a green build.
+  - If there is an obvious resource-safety issue in the path you modify (for example, leaks, missing cleanup, missing bounds checks, unsafe concurrency), make the smallest fix that prevents harm.
+  - If a small local adjustment is required to keep the change consistent with surrounding invariants (for example, error-handling contract, nullability/ownership rules, API preconditions), make that adjustment.
+- Guardrails for exceptions:
+  - Keep the fix local to the files/functions you touched (or the smallest necessary surface area).
+  - Do NOT do opportunistic cleanup.
+  - Do NOT reformat or "improve" nearby code unless required for the fix.
+  - Explain what was wrong, why it matters, and why the chosen fix is minimal.
 
 When your changes create orphans:
 - Remove imports/variables/functions that your changes made unused.
 - Do NOT remove pre-existing dead code unless asked.
-- If you notice unrelated dead code or suspicious logic, mention it and point to locations.
+- Instead, mention it and point to locations if you notice unrelated dead code or suspicious logic.
 
 The test:
 Every changed line should trace directly to the user's request or to making the requested change correct and verifiable.
@@ -181,11 +205,11 @@ Every changed line should trace directly to the user's request or to making the 
 ### Goal-driven execution
 **Define success criteria. Loop until verified.**
 
-Transform tasks into verifiable goals:
-- "Add validation" -> "Write tests for invalid inputs, then make them pass."
-- "Fix the bug" -> "Write a test that reproduces it, then make it pass."
-- "Refactor X" -> "Ensure tests pass before and after, and behavior is unchanged."
-- "Implement feature Y" -> "Write tests that demonstrate the feature, then implement it."
+Transform tasks into verifiable goals. For example:
+- "Add validation" -> "Write tests for valid and invalid inputs, then make them pass."
+- "Fix the bug" -> "Write tests that reproduce the bug and verify no regression, then make them pass."
+- "Refactor X" -> "Ensure tests pass before and after, and behavior is unchanged without regressions."
+- "Implement feature Y" -> "Write tests that demonstrate the feature with several scenarios, then make them pass."
 
 Verification rules:
 - Prefer automated verification (tests, type checks, linting, builds).
@@ -195,4 +219,6 @@ Verification rules:
   - Expected outputs or assertions
   - Any risks or edge cases to double-check
 - If you find issues during verification, fix them and verify again.
-- The verification loop continues until all criteria are met or the maximum number of iterations (default: 5) is reached. 
+- The verification loop continues until all criteria are met or the maximum number of iterations (default: 5) is reached.
+- If the criteria does not meet after the maximum iterations:
+  - Explains the blockers to the user and request a guidance on how to proceed.
