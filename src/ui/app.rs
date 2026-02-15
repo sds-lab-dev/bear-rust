@@ -11,9 +11,9 @@ use super::coding::{
     self, CodingPhaseState, CodingTask, CodingTaskResult, CodingTaskStatus,
     TaskExtractionResponse, TaskReport,
 };
-use super::planning::{self, PlanJournal, PlanResponseType, PlanWritingResponse};
+use super::planning::{self, PlanResponseType, PlanWritingResponse};
 use super::session_naming::{self, SessionNameResponse};
-use super::spec_writing::{self, SpecJournal, SpecResponseType, SpecWritingResponse};
+use super::spec_writing::{self, SpecResponseType, SpecWritingResponse};
 use super::error::UiError;
 use super::renderer::{USER_PREFIX, wrap_text_by_char_width};
 
@@ -76,10 +76,8 @@ pub struct App {
     qa_log: Vec<QaRound>,
     current_round_questions: Vec<String>,
     thinking_started_at: Instant,
-    journal: Option<SpecJournal>,
     last_spec_draft: Option<String>,
     spec_clarification_questions: Vec<String>,
-    plan_journal: Option<PlanJournal>,
     last_plan_draft: Option<String>,
     plan_clarification_questions: Vec<String>,
     approved_spec: Option<String>,
@@ -119,10 +117,8 @@ impl App {
             qa_log: Vec::new(),
             current_round_questions: Vec::new(),
             thinking_started_at: Instant::now(),
-            journal: None,
             last_spec_draft: None,
             spec_clarification_questions: Vec::new(),
-            plan_journal: None,
             last_plan_draft: None,
             plan_clarification_questions: Vec::new(),
             approved_spec: None,
@@ -521,13 +517,8 @@ impl App {
     fn start_spec_writing_query(&mut self, is_initial: bool) {
         let mut client = self.claude_client.take().expect("client must be available");
 
-        if is_initial {
-            client.reset_session();
-        }
-
         let original_request = self.confirmed_requirements.clone().unwrap();
         let qa_log = self.qa_log.clone();
-        let journal_path = self.journal.as_ref().map(|j| j.file_path().to_path_buf());
         let user_feedback = if is_initial {
             None
         } else {
@@ -548,8 +539,7 @@ impl App {
                 spec_writing::build_initial_spec_prompt(&original_request, &qa_log)
             } else {
                 let feedback = user_feedback.unwrap_or_default();
-                let path = journal_path.as_deref().unwrap_or(Path::new("unknown"));
-                spec_writing::build_revision_prompt(&feedback, path)
+                spec_writing::build_revision_prompt(&feedback)
             };
 
             let request = ClaudeCodeRequest {
@@ -575,15 +565,9 @@ impl App {
     }
 
     fn handle_spec_response(&mut self, response: SpecWritingResponse) {
-        self.ensure_journal();
-
         match response.response_type {
             SpecResponseType::SpecDraft => {
                 let draft = response.spec_draft.unwrap_or_default();
-
-                if let Some(journal) = &self.journal {
-                    let _ = journal.append_spec_draft(&draft);
-                }
 
                 self.add_system_message(&format!(
                     "스펙 드래프트가 작성되었습니다:\n\n{}\n\n피드백을 입력하거나, Ctrl+A를 눌러 승인하세요.",
@@ -594,10 +578,6 @@ impl App {
             }
             SpecResponseType::ClarifyingQuestions => {
                 let questions = response.clarifying_questions.unwrap_or_default();
-
-                if let Some(journal) = &self.journal {
-                    let _ = journal.append_clarifying_questions(&questions);
-                }
 
                 let mut message = String::from("스펙 작성을 위해 추가 정보가 필요합니다.\n");
                 for (i, question) in questions.iter().enumerate() {
@@ -614,42 +594,6 @@ impl App {
         }
     }
 
-    fn ensure_journal(&mut self) {
-        if self.journal.is_some() {
-            return;
-        }
-
-        let workspace = match &self.confirmed_workspace {
-            Some(w) => w.clone(),
-            None => return,
-        };
-
-        let session_name = match &self.session_name {
-            Some(name) => name.clone(),
-            None => return,
-        };
-
-        let date_dir = match &self.session_date_dir {
-            Some(d) => d.clone(),
-            None => return,
-        };
-
-        match SpecJournal::new(&workspace, &date_dir, &session_name) {
-            Ok(journal) => {
-                // Phase 1 데이터를 소급 기록한다.
-                if let Some(request) = &self.confirmed_requirements {
-                    let _ = journal.append_user_request(request);
-                }
-                let _ = journal.append_qa_log(&self.qa_log);
-
-                self.journal = Some(journal);
-            }
-            Err(err) => {
-                self.add_system_message(&format!("저널 파일 생성 실패: {}", err));
-            }
-        }
-    }
-
     fn submit_spec_clarification_answer(&mut self) {
         let answer = self.input_buffer.trim().to_string();
         if answer.is_empty() {
@@ -658,10 +602,6 @@ impl App {
 
         self.add_user_message(&answer);
         self.clear_input();
-
-        if let Some(journal) = &self.journal {
-            let _ = journal.append_user_answers(&answer);
-        }
 
         self.add_system_message("답변을 반영하여 스펙을 작성합니다.");
         self.start_spec_writing_query(false);
@@ -676,10 +616,6 @@ impl App {
         self.add_user_message(&feedback);
         self.clear_input();
 
-        if let Some(journal) = &self.journal {
-            let _ = journal.append_user_feedback(&feedback);
-        }
-
         self.add_system_message("피드백을 반영하여 스펙을 수정합니다.");
         self.start_spec_writing_query(false);
     }
@@ -693,11 +629,19 @@ impl App {
             }
         };
 
-        if let Some(journal) = &self.journal {
-            let _ = journal.append_approved_spec(&spec);
+        self.approved_spec = Some(spec.clone());
+
+        if let (Some(workspace), Some(date_dir), Some(session_name)) = (
+            &self.confirmed_workspace,
+            &self.session_date_dir,
+            &self.session_name,
+        )
+            && let Err(err) =
+                spec_writing::save_approved_spec(workspace, date_dir, session_name, &spec)
+        {
+            self.add_system_message(&format!("스펙 파일 저장 실패: {}", err));
         }
 
-        self.approved_spec = Some(spec);
         self.add_system_message("스펙이 승인되었습니다. 개발 계획을 작성합니다.");
         self.start_plan_writing_query(true);
     }
@@ -710,7 +654,6 @@ impl App {
         }
 
         let approved_spec = self.approved_spec.clone().unwrap_or_default();
-        let plan_journal_path = self.plan_journal.as_ref().map(|j| j.file_path().to_path_buf());
         let user_feedback = if is_initial {
             None
         } else {
@@ -731,8 +674,7 @@ impl App {
                 planning::build_initial_plan_prompt(&approved_spec)
             } else {
                 let feedback = user_feedback.unwrap_or_default();
-                let path = plan_journal_path.as_deref().unwrap_or(Path::new("unknown"));
-                planning::build_plan_revision_prompt(&feedback, path)
+                planning::build_plan_revision_prompt(&feedback)
             };
 
             let request = ClaudeCodeRequest {
@@ -758,15 +700,9 @@ impl App {
     }
 
     fn handle_plan_response(&mut self, response: PlanWritingResponse) {
-        self.ensure_plan_journal();
-
         match response.response_type {
             PlanResponseType::PlanDraft => {
                 let draft = response.plan_draft.unwrap_or_default();
-
-                if let Some(journal) = &self.plan_journal {
-                    let _ = journal.append_plan_draft(&draft);
-                }
 
                 self.add_system_message(&format!(
                     "개발 계획 드래프트가 작성되었습니다:\n\n{}\n\n피드백을 입력하거나, Ctrl+A를 눌러 승인하세요.",
@@ -777,10 +713,6 @@ impl App {
             }
             PlanResponseType::ClarifyingQuestions => {
                 let questions = response.clarifying_questions.unwrap_or_default();
-
-                if let Some(journal) = &self.plan_journal {
-                    let _ = journal.append_clarifying_questions(&questions);
-                }
 
                 let mut message = String::from("개발 계획 작성을 위해 추가 정보가 필요합니다.\n");
                 for (i, question) in questions.iter().enumerate() {
@@ -797,40 +729,6 @@ impl App {
         }
     }
 
-    fn ensure_plan_journal(&mut self) {
-        if self.plan_journal.is_some() {
-            return;
-        }
-
-        let workspace = match &self.confirmed_workspace {
-            Some(w) => w.clone(),
-            None => return,
-        };
-
-        let session_name = match &self.session_name {
-            Some(name) => name.clone(),
-            None => return,
-        };
-
-        let date_dir = match &self.session_date_dir {
-            Some(d) => d.clone(),
-            None => return,
-        };
-
-        match PlanJournal::new(&workspace, &date_dir, &session_name) {
-            Ok(journal) => {
-                // 승인된 스펙을 plan journal에 소급 기록한다.
-                if let Some(spec) = &self.approved_spec {
-                    let _ = journal.append_approved_spec(spec);
-                }
-                self.plan_journal = Some(journal);
-            }
-            Err(err) => {
-                self.add_system_message(&format!("플랜 저널 파일 생성 실패: {}", err));
-            }
-        }
-    }
-
     fn submit_plan_clarification_answer(&mut self) {
         let answer = self.input_buffer.trim().to_string();
         if answer.is_empty() {
@@ -839,10 +737,6 @@ impl App {
 
         self.add_user_message(&answer);
         self.clear_input();
-
-        if let Some(journal) = &self.plan_journal {
-            let _ = journal.append_user_answers(&answer);
-        }
 
         self.add_system_message("답변을 반영하여 개발 계획을 작성합니다.");
         self.start_plan_writing_query(false);
@@ -857,10 +751,6 @@ impl App {
         self.add_user_message(&feedback);
         self.clear_input();
 
-        if let Some(journal) = &self.plan_journal {
-            let _ = journal.append_user_feedback(&feedback);
-        }
-
         self.add_system_message("피드백을 반영하여 개발 계획을 수정합니다.");
         self.start_plan_writing_query(false);
     }
@@ -874,8 +764,15 @@ impl App {
             }
         };
 
-        if let Some(journal) = &self.plan_journal {
-            let _ = journal.append_approved_plan(&plan);
+        if let (Some(workspace), Some(date_dir), Some(session_name)) = (
+            &self.confirmed_workspace,
+            &self.session_date_dir,
+            &self.session_name,
+        )
+            && let Err(err) =
+                planning::save_approved_plan(workspace, date_dir, session_name, &plan)
+        {
+            self.add_system_message(&format!("플랜 파일 저장 실패: {}", err));
         }
 
         self.add_system_message("개발 계획이 승인되었습니다. 작업 목록을 추출합니다.");
@@ -886,11 +783,12 @@ impl App {
         let mut client = self.claude_client.take().expect("client must be available");
         client.reset_session();
 
-        let plan_journal_path = self
-            .plan_journal
-            .as_ref()
-            .map(|j| j.file_path().to_path_buf())
-            .unwrap_or_default();
+        let plan_path = match (&self.confirmed_workspace, &self.session_date_dir, &self.session_name) {
+            (Some(ws), Some(date), Some(name)) => {
+                ws.join(".bear").join(date).join(name).join("plan.md")
+            }
+            _ => PathBuf::new(),
+        };
 
         let (sender, receiver) = mpsc::channel();
         self.agent_result_receiver = Some(receiver);
@@ -900,7 +798,7 @@ impl App {
         std::thread::spawn(move || {
             let request = ClaudeCodeRequest {
                 system_prompt: Some(coding::task_extraction_system_prompt().to_string()),
-                user_prompt: coding::build_task_extraction_prompt(&plan_journal_path),
+                user_prompt: coding::build_task_extraction_prompt(&plan_path),
                 model: None,
                 output_schema: coding::task_extraction_schema(),
             };
@@ -1027,16 +925,18 @@ impl App {
             task.title,
         ));
 
-        let spec_journal_path = self
-            .journal
-            .as_ref()
-            .map(|j| j.file_path().to_path_buf())
-            .unwrap_or_default();
-        let plan_journal_path = self
-            .plan_journal
-            .as_ref()
-            .map(|j| j.file_path().to_path_buf())
-            .unwrap_or_default();
+        let spec_path = match (&self.confirmed_workspace, &self.session_date_dir, &self.session_name) {
+            (Some(ws), Some(date), Some(name)) => {
+                ws.join(".bear").join(date).join(name).join("spec.md")
+            }
+            _ => PathBuf::new(),
+        };
+        let plan_path = match (&self.confirmed_workspace, &self.session_date_dir, &self.session_name) {
+            (Some(ws), Some(date), Some(name)) => {
+                ws.join(".bear").join(date).join(name).join("plan.md")
+            }
+            _ => PathBuf::new(),
+        };
         let api_key = self.config.api_key().to_string();
 
         let mut client = match ClaudeCodeClient::new(
@@ -1063,8 +963,8 @@ impl App {
         std::thread::spawn(move || {
             let user_prompt = coding::build_coding_task_prompt(
                 &task,
-                &spec_journal_path,
-                &plan_journal_path,
+                &spec_path,
+                &plan_path,
                 &upstream_report_paths,
             );
 

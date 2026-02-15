@@ -128,12 +128,12 @@ Output MUST contain ONLY the JSON object, with no extra text.
 
 ---
 
-You MUST read the plan journal file below before extracting tasks:
-- {{PLAN_JOURNAL_PATH}}"#;
+You MUST read the plan file below before extracting tasks:
+- {{PLAN_PATH}}"#;
 
-pub fn build_task_extraction_prompt(plan_journal_path: &Path) -> String {
+pub fn build_task_extraction_prompt(plan_path: &Path) -> String {
     TASK_EXTRACTION_PROMPT_TEMPLATE
-        .replace("{{PLAN_JOURNAL_PATH}}", &plan_journal_path.display().to_string())
+        .replace("{{PLAN_PATH}}", &plan_path.display().to_string())
 }
 
 // ---------------------------------------------------------------------------
@@ -425,7 +425,6 @@ You MUST decide on one of the following status markers based on your implementat
 **Implementation report:**
 <<<
 # Metadata
-- Datetime: <YYYY-MM-DD HH:MM:SS>
 - Workspace: <path of the workspace>
 - Repository: <repository name>
 - Base Branch: <branch name> (the branch that this worktree is based on)
@@ -529,16 +528,16 @@ Task Description:
 
 You MUST read following files for context before writing code:
 - Specification:
-  - {{SPEC_JOURNAL_PATH}}
+  - {{SPEC_PATH}}
 - Plan:
-  - {{PLAN_JOURNAL_PATH}}
+  - {{PLAN_PATH}}
 - Implementation reports for upstream tasks (if available):
-{{UPSTREAM_REPORT_PATHS}}"#;
+  - {{UPSTREAM_REPORT_PATHS}}"#;
 
 pub fn build_coding_task_prompt(
     task: &CodingTask,
-    spec_journal_path: &Path,
-    plan_journal_path: &Path,
+    spec_path: &Path,
+    plan_path: &Path,
     upstream_report_paths: &[PathBuf],
 ) -> String {
     let upstream_section = if upstream_report_paths.is_empty() {
@@ -555,8 +554,8 @@ pub fn build_coding_task_prompt(
         .replace("{{TASK_ID}}", &task.task_id)
         .replace("{{TASK_TITLE}}", &task.title)
         .replace("{{TASK_DESCRIPTION}}", &task.description)
-        .replace("{{SPEC_JOURNAL_PATH}}", &spec_journal_path.display().to_string())
-        .replace("{{PLAN_JOURNAL_PATH}}", &plan_journal_path.display().to_string())
+        .replace("{{SPEC_PATH}}", &spec_path.display().to_string())
+        .replace("{{PLAN_PATH}}", &plan_path.display().to_string())
         .replace("{{UPSTREAM_REPORT_PATHS}}", &upstream_section)
 }
 
@@ -775,7 +774,7 @@ mod tests {
 
     #[test]
     fn task_extraction_prompt_contains_plan_path() {
-        let plan_path = Path::new("/workspace/.bear/20260215/session/plan.journal.md");
+        let plan_path = Path::new("/workspace/.bear/20260215/session/plan.md");
         let prompt = build_task_extraction_prompt(plan_path);
 
         assert!(prompt.contains(&plan_path.display().to_string()));
@@ -791,8 +790,8 @@ mod tests {
             dependencies: vec!["TASK-1".to_string()],
         };
 
-        let spec_path = Path::new("/workspace/.bear/20260215/session/spec.journal.md");
-        let plan_path = Path::new("/workspace/.bear/20260215/session/plan.journal.md");
+        let spec_path = Path::new("/workspace/.bear/20260215/session/spec.md");
+        let plan_path = Path::new("/workspace/.bear/20260215/session/plan.md");
         let upstream_paths = vec![PathBuf::from("/workspace/.bear/20260215/session/TASK-1.md")];
 
         let prompt = build_coding_task_prompt(&task, spec_path, plan_path, &upstream_paths);
@@ -814,8 +813,8 @@ mod tests {
             dependencies: vec![],
         };
 
-        let spec_path = Path::new("/workspace/.bear/spec.journal.md");
-        let plan_path = Path::new("/workspace/.bear/plan.journal.md");
+        let spec_path = Path::new("/workspace/.bear/spec.md");
+        let plan_path = Path::new("/workspace/.bear/plan.md");
         let prompt = build_coding_task_prompt(&task, spec_path, plan_path, &[]);
 
         assert!(prompt.contains("N/A"));

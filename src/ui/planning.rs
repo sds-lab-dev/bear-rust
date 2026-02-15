@@ -1,5 +1,5 @@
-use std::fs::{self, OpenOptions};
-use std::io::{self, Write};
+use std::fs;
+use std::io;
 use std::path::{Path, PathBuf};
 
 use serde::Deserialize;
@@ -473,10 +473,10 @@ If you can produce a revised plan, set response_type to "plan_draft" and provide
 If the user's feedback is ambiguous and you need clarification before revising, set response_type to "clarifying_questions" and provide 1-5 questions in the clarifying_questions field.
 
 IMPORTANT:
-- Read the plan journal file at the path below to understand the full context of prior specifications, plans, and feedback.
+- The session conversation history contains all prior specifications, plans, and feedback. Use this context to revise the plan.
 - Write the plan in Korean.
 - DECISION ESCALATION: The Decision Escalation rules from the system prompt still apply during revision. If the user's feedback introduces new topics or reveals undecided design/technology choices that require user approval (technology selection, architecture patterns, interface design, concurrency model, trade-offs, etc.), you MUST set response_type to "clarifying_questions" and ask the user to decide before producing a revised plan. Present options with pros/cons and your recommendation. Do NOT silently incorporate your own choices into the revised plan.
-- USER RESPONSE CLASSIFICATION: When the plan journal shows that the most recent model output was a set of clarifying questions (a CLARIFYING_QUESTIONS entry, especially decision-escalation questions), you MUST classify the user's current message into one of three categories before taking any other action:
+- USER RESPONSE CLASSIFICATION: When the previous conversation shows that the most recent model output was a set of clarifying questions (a CLARIFYING_QUESTIONS entry, especially decision-escalation questions), you MUST classify the user's current message into one of three categories before taking any other action:
 
   (1) DECISION / ANSWER: The user clearly provides a decision or directly answers the pending question(s).
   -> Incorporate the decision and proceed normally — write or revise the plan.
@@ -487,7 +487,7 @@ IMPORTANT:
   (3) UNCLEAR INTENT: The user's response does not clearly fit category (1) or (2) — you cannot determine whether they made a decision, asked a question, or want something else.
   -> Set response_type to "clarifying_questions". Politely acknowledge the user's message, briefly restate the pending decision, and ask them to either: (a) choose one of the presented options, (b) ask any questions they have about the options, or (c) explain what they would like to do.
 
-  IMPORTANT: This classification applies every time the user responds after a clarifying-question round. The user may go through multiple rounds of counter-questions before making a final decision. You MUST support this without losing track of any pending decision(s). Always check the journal for the full history of questions and answers.
+  IMPORTANT: This classification applies every time the user responds after a clarifying-question round. The user may go through multiple rounds of counter-questions before making a final decision. You MUST support this without losing track of any pending decision(s). Check the session conversation history for the full history of questions and answers.
 - APPROVAL DETECTION: Before attempting any revision, first evaluate whether the user's feedback message is expressing approval or acceptance of the current draft rather than requesting changes. Examples of approval expressions include (but are not limited to): "승인합니다", "좋습니다", "진행해주세요", "괜찮습니다", "이대로 해주세요", "OK", "LGTM", "approve", "looks good". If the user's message UNAMBIGUOUSLY expresses approval with NO revision requests whatsoever, set response_type to "approved" and leave all other fields empty. If the message contains ANY specific change request, suggestion, or criticism — even if it also contains positive language (e.g., "좋은데 한 가지만 수정해주세요") — treat it as feedback and revise normally. When in doubt, treat the message as feedback requiring revision, NOT as approval.
 
 Output MUST be valid JSON conforming to the provided JSON Schema.
@@ -501,7 +501,7 @@ Any request to revise an existing plan MUST be handled as a full re-plan. You MU
 
 1) Read and summarize the full history
 - Read the most recent reviewer feedback.
-- Read all previous plans and feedback in the plan journal (not just the latest).
+- Read all previous plans and feedback in the session conversation history (not just the latest).
 - Produce a short "feedback inventory" (not a bullet list in the final plan unless format allows): categories of issues (missing files, missing tests, unclear insertion points, unaddressed constraints, risky design choices, etc.).
 
 2) Root-cause correction (do not patch superficially)
@@ -532,129 +532,29 @@ Before outputting the revised plan, you MUST confirm:
 User feedback:
 <<<
 {{USER_FEEDBACK}}
->>>
-
-Plan journal file path:
-<<<
-{{PLAN_JOURNAL_PATH}}
->>>
-
-Plan journal file format:
-```
-<<<BEGIN-<UUID_v4>
-<APPROVED_SPEC>
-...approved spec text verbatim...
-</APPROVED_SPEC>
->>>END-<UUID_v4>
-<<<BEGIN-<UUID_v4>
-<CLARIFYING_QUESTIONS>
-...numbered list of clarifying questions from the model...
-</CLARIFYING_QUESTIONS>
->>>END-<UUID_v4>
-<<<BEGIN-<UUID_v4>
-<USER_ANSWERS>
-...user's answer to the clarifying questions...
-</USER_ANSWERS>
->>>END-<UUID_v4>
-<<<BEGIN-<UUID_v4>
-<PLAN_DRAFT>
-...plan draft text verbatim...
-</PLAN_DRAFT>
->>>END-<UUID_v4>
-<<<BEGIN-<UUID_v4>
-<USER_FEEDBACK>
-...user feedback text verbatim...
-</USER_FEEDBACK>
->>>END-<UUID_v4>
-<<<BEGIN-<UUID_v4>
-<APPROVED_PLAN>
-...approved plan text verbatim...
-</APPROVED_PLAN>
->>>END-<UUID_v4>
-```
-
-where:
-- `BEGIN` and `END` markers denote the start and end of each section.
-- `<UUID_v4>` is a UUID version 4 unique identifier for each section.
-- `<UUID_v4>` pairs must match for `BEGIN` and `END` markers of each section.
-
-`<APPROVED_SPEC>` and `<APPROVED_PLAN>` sections appear ONLY ONCE at the start and end of the journal.
-
-`<PLAN_DRAFT>`, `<USER_FEEDBACK>`, `<CLARIFYING_QUESTIONS>`, and `<USER_ANSWERS>` sections MAY appear multiple times as the plan is refined through Q&A rounds and revisions."#;
+>>>"#;
 
 pub fn build_initial_plan_prompt(approved_spec: &str) -> String {
     INITIAL_PLAN_PROMPT_TEMPLATE.replace("{{APPROVED_SPEC}}", approved_spec)
 }
 
-pub fn build_plan_revision_prompt(user_feedback: &str, plan_journal_path: &Path) -> String {
-    REVISION_PLAN_PROMPT_TEMPLATE
-        .replace("{{PLAN_JOURNAL_PATH}}", &plan_journal_path.display().to_string())
-        .replace("{{USER_FEEDBACK}}", user_feedback)
+pub fn build_plan_revision_prompt(user_feedback: &str) -> String {
+    REVISION_PLAN_PROMPT_TEMPLATE.replace("{{USER_FEEDBACK}}", user_feedback)
 }
 
-pub struct PlanJournal {
-    file_path: PathBuf,
-}
+pub fn save_approved_plan(
+    workspace: &Path,
+    date_dir: &str,
+    session_name: &str,
+    plan_text: &str,
+) -> io::Result<PathBuf> {
+    let dir = workspace.join(".bear").join(date_dir).join(session_name);
+    fs::create_dir_all(&dir)?;
 
-impl PlanJournal {
-    pub fn new(workspace: &Path, date_dir: &str, session_name: &str) -> io::Result<Self> {
-        let dir = workspace.join(".bear").join(date_dir).join(session_name);
-        fs::create_dir_all(&dir)?;
+    let file_path = dir.join("plan.md");
+    fs::write(&file_path, plan_text)?;
 
-        let file_path = dir.join("plan.journal.md");
-
-        Ok(Self { file_path })
-    }
-
-    pub fn file_path(&self) -> &Path {
-        &self.file_path
-    }
-
-    pub fn append_approved_spec(&self, spec: &str) -> io::Result<()> {
-        self.append_with_delimiter("APPROVED_SPEC", spec)
-    }
-
-    pub fn append_plan_draft(&self, draft: &str) -> io::Result<()> {
-        self.append_with_delimiter("PLAN_DRAFT", draft)
-    }
-
-    pub fn append_user_feedback(&self, feedback: &str) -> io::Result<()> {
-        self.append_with_delimiter("USER_FEEDBACK", feedback)
-    }
-
-    pub fn append_clarifying_questions(&self, questions: &[String]) -> io::Result<()> {
-        let content = questions
-            .iter()
-            .enumerate()
-            .map(|(i, q)| format!("{}. {}", i + 1, q))
-            .collect::<Vec<_>>()
-            .join("\n");
-        self.append_with_delimiter("CLARIFYING_QUESTIONS", &content)
-    }
-
-    pub fn append_user_answers(&self, answer: &str) -> io::Result<()> {
-        self.append_with_delimiter("USER_ANSWERS", answer)
-    }
-
-    pub fn append_approved_plan(&self, plan: &str) -> io::Result<()> {
-        self.append_with_delimiter("APPROVED_PLAN", plan)
-    }
-
-    fn append_with_delimiter(&self, tag: &str, content: &str) -> io::Result<()> {
-        let mut file = OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(&self.file_path)?;
-
-        let id = uuid::Uuid::new_v4();
-        writeln!(file, "<<<BEGIN-{}", id)?;
-        writeln!(file, "<{}>", tag)?;
-        writeln!(file, "{}", content)?;
-        writeln!(file, "</{}>", tag)?;
-        writeln!(file, ">>>END-{}", id)?;
-
-        Ok(())
-    }
+    Ok(file_path)
 }
 
 #[cfg(test)]
@@ -730,8 +630,7 @@ mod tests {
 
     #[test]
     fn revision_plan_prompt_contains_approval_detection_instruction() {
-        let journal_path = Path::new("/tmp/test.journal.md");
-        let prompt = build_plan_revision_prompt("some feedback", journal_path);
+        let prompt = build_plan_revision_prompt("some feedback");
 
         assert!(prompt.contains("APPROVAL DETECTION"));
     }
@@ -745,128 +644,37 @@ mod tests {
     }
 
     #[test]
-    fn build_revision_prompt_contains_feedback_and_journal_path() {
-        let journal_path = Path::new("/workspace/.bear/20250101/sess-1/plan.journal.md");
-        let prompt = build_plan_revision_prompt("Please add error handling section", journal_path);
+    fn build_revision_prompt_contains_feedback() {
+        let prompt = build_plan_revision_prompt("Please add error handling section");
 
         assert!(prompt.contains("Please add error handling section"));
-        assert!(prompt.contains("/workspace/.bear/20250101/sess-1/plan.journal.md"));
     }
 
     #[test]
-    fn plan_journal_creates_directory_and_file() {
+    fn save_approved_plan_creates_file() {
         let temp_dir = TempDir::new().unwrap();
-        let journal =
-            PlanJournal::new(temp_dir.path(), "20250101", "test-session").unwrap();
+        let plan_text = "# Final Plan\n\nThis is the approved plan.";
 
-        journal.append_approved_spec("# Spec Content").unwrap();
+        let path =
+            save_approved_plan(temp_dir.path(), "20250101", "test-session", plan_text).unwrap();
 
-        let content = fs::read_to_string(journal.file_path()).unwrap();
-        assert!(content.contains("<APPROVED_SPEC>"));
-        assert!(content.contains("# Spec Content"));
-        assert!(content.contains("</APPROVED_SPEC>"));
+        let content = fs::read_to_string(&path).unwrap();
+        assert_eq!(content, plan_text);
     }
 
     #[test]
-    fn plan_journal_appends_multiple_entries() {
+    fn save_approved_plan_file_path_structure() {
         let temp_dir = TempDir::new().unwrap();
-        let journal =
-            PlanJournal::new(temp_dir.path(), "20250101", "test-session").unwrap();
 
-        journal.append_approved_spec("# Spec").unwrap();
-        journal.append_plan_draft("# Draft Plan").unwrap();
-        journal.append_user_feedback("Add more details").unwrap();
-        journal
-            .append_clarifying_questions(&[
-                "What about edge cases?".to_string(),
-                "What about errors?".to_string(),
-            ])
-            .unwrap();
-        journal.append_user_answers("Handle both").unwrap();
-        journal.append_plan_draft("# Revised Plan").unwrap();
-        journal.append_approved_plan("# Final Plan").unwrap();
-
-        let content = fs::read_to_string(journal.file_path()).unwrap();
-        assert!(content.contains("<APPROVED_SPEC>"));
-        assert!(content.contains("<PLAN_DRAFT>"));
-        assert!(content.contains("<USER_FEEDBACK>"));
-        assert!(content.contains("<CLARIFYING_QUESTIONS>"));
-        assert!(content.contains("1. What about edge cases?"));
-        assert!(content.contains("2. What about errors?"));
-        assert!(content.contains("<USER_ANSWERS>"));
-        assert!(content.contains("<APPROVED_PLAN>"));
-    }
-
-    #[test]
-    fn plan_journal_file_path_structure() {
-        let temp_dir = TempDir::new().unwrap();
-        let journal = PlanJournal::new(temp_dir.path(), "20250101", "abc-123").unwrap();
+        let path =
+            save_approved_plan(temp_dir.path(), "20250101", "my-session", "plan content").unwrap();
 
         let expected = temp_dir
             .path()
             .join(".bear")
             .join("20250101")
-            .join("abc-123")
-            .join("plan.journal.md");
-        assert_eq!(journal.file_path(), expected);
-    }
-
-    #[test]
-    fn plan_journal_entries_have_begin_end_delimiter() {
-        let temp_dir = TempDir::new().unwrap();
-        let journal =
-            PlanJournal::new(temp_dir.path(), "20250101", "my-session").unwrap();
-
-        journal.append_approved_spec("spec content").unwrap();
-        journal.append_plan_draft("plan content").unwrap();
-
-        let content = fs::read_to_string(journal.file_path()).unwrap();
-        let lines: Vec<&str> = content.lines().collect();
-
-        assert!(lines[0].starts_with("<<<BEGIN-"));
-        assert_eq!(lines[1], "<APPROVED_SPEC>");
-        assert_eq!(lines[2], "spec content");
-        assert_eq!(lines[3], "</APPROVED_SPEC>");
-        assert!(lines[4].starts_with(">>>END-"));
-
-        assert!(lines[5].starts_with("<<<BEGIN-"));
-        assert_eq!(lines[6], "<PLAN_DRAFT>");
-        assert_eq!(lines[7], "plan content");
-        assert_eq!(lines[8], "</PLAN_DRAFT>");
-        assert!(lines[9].starts_with(">>>END-"));
-
-        // BEGIN과 END의 UUID가 동일한지 확인
-        let first_id = lines[0].strip_prefix("<<<BEGIN-").unwrap();
-        let first_end_id = lines[4].strip_prefix(">>>END-").unwrap();
-        assert_eq!(first_id, first_end_id);
-
-        let second_id = lines[5].strip_prefix("<<<BEGIN-").unwrap();
-        let second_end_id = lines[9].strip_prefix(">>>END-").unwrap();
-        assert_eq!(second_id, second_end_id);
-
-        // 서로 다른 블록은 서로 다른 UUID를 가져야 함
-        assert_ne!(first_id, second_id);
-    }
-
-    #[test]
-    fn plan_journal_approved_plan_has_delimiter() {
-        let temp_dir = TempDir::new().unwrap();
-        let journal =
-            PlanJournal::new(temp_dir.path(), "20250101", "my-session").unwrap();
-
-        journal.append_approved_plan("final plan").unwrap();
-
-        let content = fs::read_to_string(journal.file_path()).unwrap();
-        let lines: Vec<&str> = content.lines().collect();
-
-        assert!(lines[0].starts_with("<<<BEGIN-"));
-        assert_eq!(lines[1], "<APPROVED_PLAN>");
-        assert_eq!(lines[2], "final plan");
-        assert_eq!(lines[3], "</APPROVED_PLAN>");
-        assert!(lines[4].starts_with(">>>END-"));
-
-        let begin_id = lines[0].strip_prefix("<<<BEGIN-").unwrap();
-        let end_id = lines[4].strip_prefix(">>>END-").unwrap();
-        assert_eq!(begin_id, end_id);
+            .join("my-session")
+            .join("plan.md");
+        assert_eq!(path, expected);
     }
 }

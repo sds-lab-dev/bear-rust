@@ -1,5 +1,5 @@
-use std::fs::{self, OpenOptions};
-use std::io::{self, Write};
+use std::fs;
+use std::io;
 use std::path::{Path, PathBuf};
 
 use serde::Deserialize;
@@ -132,9 +132,9 @@ IMPORTANT:
 - The spec describes WHAT the system must do, not HOW it is implemented internally.
 - The spec MUST be testable with clear acceptance criteria.
 - Write the spec in Korean.
-- Read the spec journal file at the path below to understand the full context of prior requirements, Q&A, and previous spec drafts.
+- The session conversation history contains all prior requirements, Q&A, and previous spec drafts. Use this context to revise the spec.
 - DECISION ESCALATION: The same decision-escalation rules from the initial spec phase still apply. If the user's feedback introduces or reveals new undecided spec-level topics that require user approval (external interface contract, UI/UX behavior, user-facing auth flow, breaking changes to public contracts, observable behavior trade-offs, platform constraints), you MUST set response_type to "clarifying_questions" and ask the user to decide before revising the spec. When asking, present options with pros/cons and your recommendation. Do NOT silently incorporate your own choices into the revised spec. Remember: do NOT ask about implementation details (library choices, architecture patterns, storage engines, etc.) — those belong to the planning phase.
-- USER RESPONSE CLASSIFICATION: When the spec journal shows that the most recent model output was a set of clarifying questions (a CLARIFYING_QUESTIONS entry, especially decision-escalation questions), you MUST classify the user's current message into one of three categories before taking any other action:
+- USER RESPONSE CLASSIFICATION: When the previous conversation shows that the most recent model output was a set of clarifying questions (especially decision-escalation questions), you MUST classify the user's current message into one of three categories before taking any other action:
 
   (1) DECISION / ANSWER: The user clearly provides a decision or directly answers the pending question(s).
   → Incorporate the decision and proceed normally — write or revise the spec.
@@ -145,7 +145,7 @@ IMPORTANT:
   (3) UNCLEAR INTENT: The user's response does not clearly fit category (1) or (2) — you cannot determine whether they made a decision, asked a question, or want something else.
   → Set response_type to "clarifying_questions". Politely acknowledge the user's message, briefly restate the pending decision, and ask them to either: (a) choose one of the presented options, (b) ask any questions they have about the options, or (c) explain what they would like to do.
 
-  IMPORTANT: This classification applies every time the user responds after a clarifying-question round. The user may go through multiple rounds of counter-questions before making a final decision. You MUST support this without losing track of any pending decision(s). Always check the journal for the full history of questions and answers.
+  IMPORTANT: This classification applies every time the user responds after a clarifying-question round. The user may go through multiple rounds of counter-questions before making a final decision. You MUST support this without losing track of any pending decision(s). Always check the session conversation history for the full history of questions and answers.
 - APPROVAL DETECTION: Before attempting any revision, first evaluate whether the user's feedback message is expressing approval or acceptance of the current draft rather than requesting changes. Examples of approval expressions include (but are not limited to): "승인합니다", "좋습니다", "진행해주세요", "괜찮습니다", "이대로 해주세요", "OK", "LGTM", "approve", "looks good". If the user's message UNAMBIGUOUSLY expresses approval with NO revision requests whatsoever, set response_type to "approved" and leave all other fields empty. If the message contains ANY specific change request, suggestion, or criticism — even if it also contains positive language (e.g., "좋은데 한 가지만 수정해주세요") — treat it as feedback and revise normally. When in doubt, treat the message as feedback requiring revision, NOT as approval.
 
 Output MUST be valid JSON conforming to the provided JSON Schema.
@@ -154,55 +154,7 @@ Output MUST contain ONLY the JSON object, with no extra text.
 User feedback:
 <<<
 {{USER_FEEDBACK}}
->>>
-
-Spec journal file path:
-<<<
-{{JOURNAL_PATH}}
->>>
-
-Spec journal file format:
-```
-<<<BEGIN-<UUID_v4>
-<USER_REQUEST>
-...original user request text verbatim...
-</USER_REQUEST>
->>>END-<UUID_v4>
-<<<BEGIN-<UUID_v4>
-<CLARIFYING_QUESTIONS>
-...numbered list of clarifying questions from the model...
-</CLARIFYING_QUESTIONS>
->>>END-<UUID_v4>
-<<<BEGIN-<UUID_v4>
-<USER_ANSWERS>
-...user's answer to the clarifying questions...
-</USER_ANSWERS>
->>>END-<UUID_v4>
-<<<BEGIN-<UUID_v4>
-<SPEC_DRAFT>
-...spec draft text verbatim...
-</SPEC_DRAFT>
->>>END-<UUID_v4>
-<<<BEGIN-<UUID_v4>
-<USER_FEEDBACK>
-...user feedback text verbatim...
-</USER_FEEDBACK>
->>>END-<UUID_v4>
-<<<BEGIN-<UUID_v4>
-<APPROVED_SPEC>
-...approved spec text verbatim...
-</APPROVED_SPEC>
->>>END-<UUID_v4>
-```
-
-where:
-- `BEGIN` and `END` markers denote the start and end of each section.
-- `<UUID_v4>` is a UUID version 4 unique identifier for each section.
-- `<UUID_v4>` pairs must match for `BEGIN` and `END` markers of each section.
-
-`<USER_REQUEST>` and `<APPROVED_SPEC>` sections appear ONLY ONCE at the start and end of the journal.
-
-`<SPEC_DRAFT>`, `<USER_FEEDBACK>`, `<CLARIFYING_QUESTIONS>`, and `<USER_ANSWERS>` sections MAY appear multiple times as the spec is refined through Q&A rounds and revisions."#;
+>>>"#;
 
 pub fn build_initial_spec_prompt(original_request: &str, qa_log: &[QaRound]) -> String {
     let qa_log_text = format_qa_log(qa_log);
@@ -212,10 +164,8 @@ pub fn build_initial_spec_prompt(original_request: &str, qa_log: &[QaRound]) -> 
         .replace("{{QA_LOG_TEXT}}", &qa_log_text)
 }
 
-pub fn build_revision_prompt(user_feedback: &str, journal_path: &Path) -> String {
-    REVISION_PROMPT_TEMPLATE
-        .replace("{{JOURNAL_PATH}}", &journal_path.display().to_string())
-        .replace("{{USER_FEEDBACK}}", user_feedback)
+pub fn build_revision_prompt(user_feedback: &str) -> String {
+    REVISION_PROMPT_TEMPLATE.replace("{{USER_FEEDBACK}}", user_feedback)
 }
 
 fn format_qa_log(qa_log: &[QaRound]) -> String {
@@ -234,77 +184,19 @@ fn format_qa_log(qa_log: &[QaRound]) -> String {
     result
 }
 
-pub struct SpecJournal {
-    file_path: PathBuf,
-}
+pub fn save_approved_spec(
+    workspace: &Path,
+    date_dir: &str,
+    session_name: &str,
+    spec_text: &str,
+) -> io::Result<PathBuf> {
+    let dir = workspace.join(".bear").join(date_dir).join(session_name);
+    fs::create_dir_all(&dir)?;
 
-impl SpecJournal {
-    pub fn new(workspace: &Path, date_dir: &str, session_name: &str) -> io::Result<Self> {
-        let dir = workspace.join(".bear").join(date_dir).join(session_name);
-        fs::create_dir_all(&dir)?;
+    let file_path = dir.join("spec.md");
+    fs::write(&file_path, spec_text)?;
 
-        let file_path = dir.join("spec.journal.md");
-
-        Ok(Self { file_path })
-    }
-
-    pub fn file_path(&self) -> &Path {
-        &self.file_path
-    }
-
-    pub fn append_user_request(&self, text: &str) -> io::Result<()> {
-        self.append_tagged("USER_REQUEST", text)
-    }
-
-    pub fn append_clarifying_questions(&self, questions: &[String]) -> io::Result<()> {
-        let content = questions
-            .iter()
-            .enumerate()
-            .map(|(i, q)| format!("{}. {}", i + 1, q))
-            .collect::<Vec<_>>()
-            .join("\n");
-        self.append_tagged("CLARIFYING_QUESTIONS", &content)
-    }
-
-    pub fn append_user_answers(&self, answer: &str) -> io::Result<()> {
-        self.append_tagged("USER_ANSWERS", answer)
-    }
-
-    pub fn append_qa_log(&self, qa_log: &[QaRound]) -> io::Result<()> {
-        if qa_log.is_empty() {
-            return Ok(());
-        }
-        let content = format_qa_log(qa_log);
-        self.append_tagged("QA_LOG", &content)
-    }
-
-    pub fn append_spec_draft(&self, draft: &str) -> io::Result<()> {
-        self.append_tagged("SPEC_DRAFT", draft)
-    }
-
-    pub fn append_user_feedback(&self, feedback: &str) -> io::Result<()> {
-        self.append_tagged("USER_FEEDBACK", feedback)
-    }
-
-    pub fn append_approved_spec(&self, spec: &str) -> io::Result<()> {
-        self.append_tagged("APPROVED_SPEC", spec)
-    }
-
-    fn append_tagged(&self, tag: &str, content: &str) -> io::Result<()> {
-        let mut file = OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(&self.file_path)?;
-
-        let id = uuid::Uuid::new_v4();
-        writeln!(file, "<<<BEGIN-{}", id)?;
-        writeln!(file, "<{}>", tag)?;
-        writeln!(file, "{}", content)?;
-        writeln!(file, "</{}>", tag)?;
-        writeln!(file, ">>>END-{}", id)?;
-
-        Ok(())
-    }
+    Ok(file_path)
 }
 
 #[cfg(test)]
@@ -374,8 +266,7 @@ mod tests {
 
     #[test]
     fn revision_prompt_contains_approval_detection_instruction() {
-        let journal_path = Path::new("/tmp/test.journal.md");
-        let prompt = build_revision_prompt("some feedback", journal_path);
+        let prompt = build_revision_prompt("some feedback");
 
         assert!(prompt.contains("APPROVAL DETECTION"));
     }
@@ -395,66 +286,37 @@ mod tests {
     }
 
     #[test]
-    fn build_revision_prompt_contains_feedback_and_journal_path() {
-        let journal_path = Path::new("/workspace/.bear/20250101/sess-1/spec.journal.md");
-        let prompt = build_revision_prompt("Please add error handling section", journal_path);
+    fn build_revision_prompt_contains_feedback() {
+        let prompt = build_revision_prompt("Please add error handling section");
 
         assert!(prompt.contains("Please add error handling section"));
-        assert!(prompt.contains("/workspace/.bear/20250101/sess-1/spec.journal.md"));
     }
 
     #[test]
-    fn journal_creates_directory_and_file() {
+    fn save_approved_spec_creates_file() {
         let temp_dir = TempDir::new().unwrap();
-        let journal = SpecJournal::new(temp_dir.path(), "20250101", "test-session-123").unwrap();
+        let spec_text = "# Final Spec\n\nThis is the approved spec.";
 
-        journal.append_user_request("Build something").unwrap();
+        let path =
+            save_approved_spec(temp_dir.path(), "20250101", "test-session", spec_text).unwrap();
 
-        let content = fs::read_to_string(journal.file_path()).unwrap();
-        assert!(content.contains("<USER_REQUEST>"));
-        assert!(content.contains("Build something"));
-        assert!(content.contains("</USER_REQUEST>"));
+        let content = fs::read_to_string(&path).unwrap();
+        assert_eq!(content, spec_text);
     }
 
     #[test]
-    fn journal_appends_multiple_entries() {
+    fn save_approved_spec_file_path_structure() {
         let temp_dir = TempDir::new().unwrap();
-        let journal = SpecJournal::new(temp_dir.path(), "20250101", "test-session").unwrap();
 
-        journal.append_user_request("Build a tool").unwrap();
-        journal
-            .append_clarifying_questions(&[
-                "What language?".to_string(),
-                "What platform?".to_string(),
-            ])
-            .unwrap();
-        journal.append_user_answers("Rust, Linux").unwrap();
-        journal.append_spec_draft("# Draft Spec").unwrap();
-        journal.append_user_feedback("Add more details").unwrap();
-        journal.append_approved_spec("# Final Spec").unwrap();
-
-        let content = fs::read_to_string(journal.file_path()).unwrap();
-        assert!(content.contains("<USER_REQUEST>"));
-        assert!(content.contains("<CLARIFYING_QUESTIONS>"));
-        assert!(content.contains("1. What language?"));
-        assert!(content.contains("2. What platform?"));
-        assert!(content.contains("<USER_ANSWERS>"));
-        assert!(content.contains("<SPEC_DRAFT>"));
-        assert!(content.contains("<USER_FEEDBACK>"));
-        assert!(content.contains("<APPROVED_SPEC>"));
-    }
-
-    #[test]
-    fn journal_file_path_structure() {
-        let temp_dir = TempDir::new().unwrap();
-        let journal = SpecJournal::new(temp_dir.path(), "20250101", "abc-123").unwrap();
+        let path =
+            save_approved_spec(temp_dir.path(), "20250101", "my-session", "spec content").unwrap();
 
         let expected = temp_dir
             .path()
             .join(".bear")
             .join("20250101")
-            .join("abc-123")
-            .join("spec.journal.md");
-        assert_eq!(journal.file_path(), expected);
+            .join("my-session")
+            .join("spec.md");
+        assert_eq!(path, expected);
     }
 }
