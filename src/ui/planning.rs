@@ -384,7 +384,7 @@ When you finish you MUST produce an output in Markdown format that includes:
 - Do not replace the detailed plan with a summary."#
 }
 
-const INITIAL_PLAN_PROMPT_TEMPLATE: &str = r#"Based on the approved specification below, produce a detailed implementation plan.
+const INITIAL_PLAN_PROMPT_TEMPLATE: &str = r#"Based on the initial user request and the approved specification below, produce a detailed implementation plan.
 
 If the specification provides sufficient information, set response_type to "plan_draft" and produce the plan in Markdown format in the plan_draft field.
 If the specification or context is ambiguous and you need clarification from the user, set response_type to "clarifying_questions" and provide 1-5 questions in the clarifying_questions field.
@@ -461,6 +461,11 @@ Before finalizing the plan, you MUST verify that:
 - The plan includes enough detail for a developer to implement without guessing.
 
 ---
+
+Initial user request (verbatim):
+<<<
+{{USER_REQUEST}}
+>>>
 
 Approved specification (verbatim):
 <<<

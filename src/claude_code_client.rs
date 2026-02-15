@@ -19,7 +19,6 @@ const TOOLS_LIST: &str = "AskUserQuestion,Bash,TaskOutput,Edit,ExitPlanMode,Glob
 pub struct ClaudeCodeRequest {
     pub system_prompt: Option<String>,
     pub user_prompt: String,
-    pub model: Option<String>,
     pub output_schema: serde_json::Value,
 }
 
@@ -156,9 +155,7 @@ impl ClaudeCodeClient {
             }
         }
 
-        if let Some(model) = &request.model {
-            command.arg("--model").arg(model);
-        }
+        command.arg("--model").arg("claude-opus-4-6");
 
         if let Some(system_prompt) = &request.system_prompt {
             command.arg("--append-system-prompt").arg(system_prompt);
@@ -222,9 +219,7 @@ impl ClaudeCodeClient {
             ));
         }
 
-        if let Some(model) = &request.model {
-            log(format!("[{}] 모델 (--model): {}", mode, model));
-        }
+        log(format!("[{}] 모델 (--model): claude-opus-4-6", mode));
 
         if !extra_args.is_empty() {
             log(format!(

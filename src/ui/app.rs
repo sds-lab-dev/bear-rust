@@ -476,7 +476,7 @@ impl App {
             let request = ClaudeCodeRequest {
                 system_prompt: Some(clarification::system_prompt().to_string()),
                 user_prompt: clarification::build_user_prompt(&original_request, &qa_log),
-                model: None,
+
                 output_schema: clarification::clarification_schema(),
             };
 
@@ -545,7 +545,7 @@ impl App {
             let request = ClaudeCodeRequest {
                 system_prompt: Some(clarification::system_prompt().to_string()),
                 user_prompt,
-                model: None,
+
                 output_schema: spec_writing::spec_writing_schema(),
             };
 
@@ -680,7 +680,7 @@ impl App {
             let request = ClaudeCodeRequest {
                 system_prompt: Some(planning::system_prompt().to_string()),
                 user_prompt,
-                model: None,
+
                 output_schema: planning::plan_writing_schema(),
             };
 
@@ -799,7 +799,7 @@ impl App {
             let request = ClaudeCodeRequest {
                 system_prompt: Some(coding::task_extraction_system_prompt().to_string()),
                 user_prompt: coding::build_task_extraction_prompt(&plan_path),
-                model: None,
+
                 output_schema: coding::task_extraction_schema(),
             };
 
@@ -971,7 +971,7 @@ impl App {
             let request = ClaudeCodeRequest {
                 system_prompt: Some(coding::coding_agent_system_prompt().to_string()),
                 user_prompt,
-                model: None,
+
                 output_schema: coding::coding_task_result_schema(),
             };
 
@@ -1283,7 +1283,6 @@ fn generate_session_name(client: &mut ClaudeCodeClient, requirements: &str) -> S
     let request = ClaudeCodeRequest {
         system_prompt: None,
         user_prompt: session_naming::build_session_name_prompt(requirements),
-        model: None,
         output_schema: session_naming::session_name_schema(),
     };
 
