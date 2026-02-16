@@ -1554,12 +1554,10 @@ impl App {
             }
         };
 
-        let workspace = self.confirmed_workspace.clone().unwrap();
-        let date_dir = self.session_date_dir.clone().unwrap_or_default();
-        let session_name = self.session_name.clone().unwrap_or_default();
+        let journal_dir = self.journal_dir();
 
         let report_path = match coding::save_task_report(
-            &workspace, &date_dir, &session_name, &task_id, &report,
+            &journal_dir, &task_id, &report,
         ) {
             Ok(path) => path,
             Err(err) => {
