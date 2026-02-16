@@ -17,7 +17,7 @@ use super::coding::{
 };
 use super::file_validation::{self, FileKind, FileValidationResponse};
 use super::planning::{self, PlanResponseType, PlanWritingResponse};
-use super::session_naming::{self, SessionNameResponse};
+use super::session_naming;
 use super::spec_writing::{self, SpecResponseType, SpecWritingResponse};
 use super::error::UiError;
 use super::renderer::{USER_PREFIX, wrap_text_by_char_width};
@@ -771,8 +771,6 @@ impl App {
         client.reset_session();
 
         let is_plan_mode = self.selected_mode_index == 2;
-        let workspace = self.confirmed_workspace.clone().unwrap();
-        let spec_content = self.approved_spec.clone().unwrap_or_default();
         let imported_spec_path = self.imported_spec_path.clone().unwrap();
         let imported_plan_path = self.imported_plan_path.clone();
 
@@ -796,12 +794,8 @@ impl App {
         }
 
         std::thread::spawn(move || {
-            let spec_preview: String = spec_content.chars().take(500).collect();
-            let session_name = generate_session_name(&mut client, &spec_preview);
+            let session_name = session_naming::generate_session_id();
             let date_dir = session_naming::today_date_string();
-            let session_name =
-                session_naming::ensure_unique_name(&workspace, &date_dir, &session_name);
-            client.reset_session();
 
             let _ = sender.send(AgentStreamMessage::SessionName {
                 name: session_name,
@@ -930,7 +924,6 @@ impl App {
         let original_request = self.confirmed_requirements.clone().unwrap();
         let qa_log = self.qa_log.clone();
         let needs_session_name = self.session_name.is_none();
-        let workspace = self.confirmed_workspace.clone().unwrap();
 
         let (sender, receiver) = mpsc::channel();
         self.agent_result_receiver = Some(receiver);
@@ -939,10 +932,8 @@ impl App {
 
         std::thread::spawn(move || {
             if needs_session_name {
-                let name = generate_session_name(&mut client, &original_request);
+                let name = session_naming::generate_session_id();
                 let date_dir = session_naming::today_date_string();
-                let name = session_naming::ensure_unique_name(&workspace, &date_dir, &name);
-                client.reset_session();
                 let _ = sender.send(AgentStreamMessage::SessionName { name, date_dir });
             }
 
@@ -2629,18 +2620,6 @@ fn find_cursor_visual_position(
 
     let last = visual_lines.len().saturating_sub(1);
     (last, visual_lines.get(last).map_or(0, |vl| vl.char_count))
-}
-
-fn generate_session_name(client: &mut ClaudeCodeClient, requirements: &str) -> String {
-    let request = ClaudeCodeRequest {
-        user_prompt: session_naming::build_session_name_prompt(requirements),
-        output_schema: session_naming::session_name_schema(),
-    };
-
-    match client.query::<SessionNameResponse>(&request) {
-        Ok(response) => session_naming::sanitize_session_name(&response.session_name),
-        Err(_) => "unnamed-session".to_string(),
-    }
 }
 
 /// 워크스페이스 경로 검증. 문제가 있으면 에러 메시지를, 없으면 None을 반환.
