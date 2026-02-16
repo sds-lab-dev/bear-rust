@@ -107,6 +107,15 @@ The user may not immediately decide. Instead, they may ask counter-questions to 
 
 ---
 
+# Workspace Path Convention (mandatory)
+
+- The current working directory (CWD) of this process is the workspace root.
+- When citing file paths in the plan, you MUST use paths relative to the workspace root (CWD). Do NOT use absolute paths derived from the current environment (e.g., `/workspace/src/...`, `/home/user/project/src/...`).
+- Example: write `src/main.rs`, not `/workspace/src/main.rs`.
+- The coding agents that implement this plan will have their own CWD set as the workspace root. Relative paths in the plan will resolve correctly based on each agent's CWD.
+
+---
+
 # Output Requirement (planner quality bar)
 
 Your plan MUST be reviewer-friendly:
