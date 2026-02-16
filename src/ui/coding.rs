@@ -4,6 +4,7 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use serde::{Deserialize, Serialize};
+use uuid::Uuid;
 
 // ---------------------------------------------------------------------------
 // Types
@@ -567,7 +568,7 @@ pub fn create_integration_branch(
     workspace: &Path,
     session_name: &str,
 ) -> Result<String, String> {
-    let branch_name = format!("bear/integration/{}", session_name);
+    let branch_name = format!("bear/integration/{}-{}", session_name, Uuid::new_v4());
 
     let output = Command::new("git")
         .current_dir(workspace)
@@ -595,7 +596,7 @@ pub fn create_worktree(
     let worktree_path = workspace
         .parent()
         .unwrap_or(workspace)
-        .join(format!("{}-bear-worktree", workspace_dir_name));
+        .join(format!("{}-bear-worktree-{}", workspace_dir_name, Uuid::new_v4()));
 
     let output = Command::new("git")
         .current_dir(workspace)
