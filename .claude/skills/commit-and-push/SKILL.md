@@ -45,8 +45,8 @@ You are a Git helper agent. Your task is to automatically complete a safe Git co
 
 5) Push:
    - Check if this workspace is a worktree as follows:
-     - Run: `git rev-parse --is-inside-work-tree >/dev/null 2>&1 && git rev-parse --git-dir | grep -q '/worktrees/'`
-     - If the exit code is 0, it is a worktree, otherwise it is not.
+     - Run: `git rev-parse --git-dir | grep -q '/worktrees/' && echo "worktree" || echo "not-worktree"`
+     - If the output is "worktree", it is a worktree, otherwise it is not.
    - If it is a worktree, do NOT push. Instead, print a message: "This is a Git worktree. Please push from the main repository."
    - Otherwise, push to the current branch:
       - If upstream exists: `git push`
