@@ -9,7 +9,8 @@ use crate::config::Config;
 use super::clarification::{self, ClarificationQuestions, QaRound};
 use super::coding::{
     self, CodingPhaseState, CodingTask, CodingTaskResult, CodingTaskStatus,
-    TaskExtractionResponse, TaskReport,
+    ConflictResolutionResult, ConflictResolutionStatus, RebaseOutcome,
+    TaskExtractionResponse, TaskReport, TaskWorktreeInfo,
 };
 use super::planning::{self, PlanResponseType, PlanWritingResponse};
 use super::session_naming::{self, SessionNameResponse};
@@ -46,6 +47,7 @@ enum AgentOutcome {
     Planning(PlanWritingResponse),
     TaskExtraction(TaskExtractionResponse),
     CodingTaskCompleted(CodingTaskResult),
+    ConflictResolutionCompleted(ConflictResolutionResult),
 }
 
 struct AgentThreadResult {
@@ -84,6 +86,7 @@ pub struct App {
     session_name: Option<String>,
     session_date_dir: Option<String>,
     coding_state: Option<CodingPhaseState>,
+    pending_coding_report: Option<String>,
 }
 
 impl App {
@@ -125,6 +128,7 @@ impl App {
             session_name: None,
             session_date_dir: None,
             coding_state: None,
+            pending_coding_report: None,
         })
     }
 
@@ -224,6 +228,9 @@ impl App {
                         }
                         Ok(AgentOutcome::CodingTaskCompleted(result)) => {
                             self.handle_coding_task_result(result);
+                        }
+                        Ok(AgentOutcome::ConflictResolutionCompleted(result)) => {
+                            self.handle_conflict_resolution_result(result);
                         }
                         Err(error_message) => {
                             if matches!(self.input_mode, InputMode::Coding) {
@@ -860,27 +867,17 @@ impl App {
                 }
             };
 
-        let worktree_path = match coding::create_worktree(&workspace, &integration_branch) {
-            Ok(path) => path,
-            Err(err) => {
-                self.add_system_message(&format!("Failed to create git worktree: {}", err));
-                self.input_mode = InputMode::Done;
-                return;
-            }
-        };
-
         self.add_system_message(&format!(
-            "코딩 워크스페이스 준비 완료.\n브랜치: {}\n워크트리: {}",
+            "코딩 워크스페이스 준비 완료.\n통합 브랜치: {}",
             integration_branch,
-            worktree_path.display(),
         ));
 
         self.coding_state = Some(CodingPhaseState {
             tasks: response.tasks,
             current_task_index: 0,
             task_reports: Vec::new(),
-            worktree_path,
             integration_branch,
+            current_task_worktree: None,
         });
 
         self.start_next_coding_task();
@@ -890,7 +887,7 @@ impl App {
     /// 남은 태스크가 없으면 None을 반환한다.
     fn extract_next_coding_task_data(
         &self,
-    ) -> Option<(CodingTask, usize, usize, Vec<PathBuf>, PathBuf)> {
+    ) -> Option<(CodingTask, usize, usize, Vec<PathBuf>)> {
         let coding_state = self.coding_state.as_ref()?;
         if coding_state.current_task_index >= coding_state.tasks.len() {
             return None;
@@ -901,14 +898,13 @@ impl App {
         let index = coding_state.current_task_index;
         let upstream_report_paths =
             coding::collect_upstream_report_paths(&task, &coding_state.task_reports);
-        let worktree_path = coding_state.worktree_path.clone();
 
-        Some((task, total, index, upstream_report_paths, worktree_path))
+        Some((task, total, index, upstream_report_paths))
     }
 
     fn start_next_coding_task(&mut self) {
         let extracted = self.extract_next_coding_task_data();
-        let (task, total, index, upstream_report_paths, worktree_path) = match extracted {
+        let (task, total, index, upstream_report_paths) = match extracted {
             Some(data) => data,
             None => {
                 self.finish_coding_phase();
@@ -923,6 +919,54 @@ impl App {
             task.task_id,
             task.title,
         ));
+
+        let workspace = self.confirmed_workspace.clone().unwrap();
+        let integration_branch = self
+            .coding_state
+            .as_ref()
+            .unwrap()
+            .integration_branch
+            .clone();
+
+        let task_branch =
+            match coding::create_task_branch(&workspace, &integration_branch, &task.task_id) {
+                Ok(branch) => branch,
+                Err(err) => {
+                    self.add_system_message(&format!("태스크 브랜치 생성 실패: {}", err));
+                    self.save_and_advance_task(
+                        task.task_id.clone(),
+                        CodingTaskStatus::ImplementationBlocked,
+                        format!("태스크 브랜치 생성 실패: {}", err),
+                    );
+                    return;
+                }
+            };
+
+        let worktree_path = match coding::create_worktree(&workspace, &task_branch) {
+            Ok(path) => path,
+            Err(err) => {
+                self.add_system_message(&format!("워크트리 생성 실패: {}", err));
+                let _ = coding::delete_branch(&workspace, &task_branch);
+                self.save_and_advance_task(
+                    task.task_id.clone(),
+                    CodingTaskStatus::ImplementationBlocked,
+                    format!("워크트리 생성 실패: {}", err),
+                );
+                return;
+            }
+        };
+
+        self.add_system_message(&format!(
+            "태스크 워크트리 생성: {}\n브랜치: {}",
+            worktree_path.display(),
+            task_branch,
+        ));
+
+        let coding_state = self.coding_state.as_mut().unwrap();
+        coding_state.current_task_worktree = Some(TaskWorktreeInfo {
+            worktree_path: worktree_path.clone(),
+            task_branch,
+        });
 
         let spec_path = match (&self.confirmed_workspace, &self.session_date_dir, &self.session_name) {
             (Some(ws), Some(date), Some(name)) => {
@@ -946,10 +990,15 @@ impl App {
             Ok(c) => c,
             Err(err) => {
                 self.add_system_message(&format!(
-                    "Failed to create coding agent client: {}",
+                    "코딩 에이전트 클라이언트 생성 실패: {}",
                     err,
                 ));
-                self.input_mode = InputMode::Done;
+                self.cleanup_current_task_worktree();
+                self.save_and_advance_task(
+                    task.task_id.clone(),
+                    CodingTaskStatus::ImplementationBlocked,
+                    format!("코딩 에이전트 클라이언트 생성 실패: {}", err),
+                );
                 return;
             }
         };
@@ -989,11 +1038,10 @@ impl App {
     }
 
     fn handle_coding_task_result(&mut self, result: CodingTaskResult) {
-        let task_id = {
+        let (task_id, task_title) = {
             let coding_state = self.coding_state.as_ref().unwrap();
-            coding_state.tasks[coding_state.current_task_index]
-                .task_id
-                .clone()
+            let task = &coding_state.tasks[coding_state.current_task_index];
+            (task.task_id.clone(), task.title.clone())
         };
 
         let status_label = match &result.status {
@@ -1005,7 +1053,58 @@ impl App {
             task_id, status_label,
         ));
 
-        self.save_and_advance_task(task_id, result.status, result.report);
+        if result.status == CodingTaskStatus::ImplementationBlocked {
+            self.cleanup_current_task_worktree();
+            self.save_and_advance_task(task_id, result.status, result.report);
+            return;
+        }
+
+        self.rebase_and_merge_task(task_id, task_title, result.report);
+    }
+
+    fn rebase_and_merge_task(
+        &mut self,
+        task_id: String,
+        task_title: String,
+        report: String,
+    ) {
+        let coding_state = self.coding_state.as_ref().unwrap();
+        let worktree_info = coding_state.current_task_worktree.as_ref().unwrap();
+        let worktree_path = worktree_info.worktree_path.clone();
+        let integration_branch = coding_state.integration_branch.clone();
+
+        self.add_system_message(&format!(
+            "[{}] 통합 브랜치로 리베이스 시작...",
+            task_id,
+        ));
+
+        match coding::rebase_onto_integration(&worktree_path, &integration_branch) {
+            Ok(RebaseOutcome::Success) => {
+                self.add_system_message(&format!("[{}] 리베이스 성공.", task_id));
+                self.squash_merge_and_advance(task_id, task_title, report);
+            }
+            Ok(RebaseOutcome::Conflict { conflicted_files }) => {
+                self.add_system_message(&format!(
+                    "[{}] 리베이스 충돌 발생 ({}개 파일). 충돌 해결 에이전트 시작...",
+                    task_id,
+                    conflicted_files.len(),
+                ));
+                self.start_conflict_resolution(
+                    task_id,
+                    conflicted_files,
+                    report,
+                );
+            }
+            Err(err) => {
+                self.add_system_message(&format!("[{}] 리베이스 실패: {}", task_id, err));
+                self.cleanup_current_task_worktree();
+                self.save_and_advance_task(
+                    task_id,
+                    CodingTaskStatus::ImplementationBlocked,
+                    format!("{}\n\n---\n리베이스 실패: {}", report, err),
+                );
+            }
+        }
     }
 
     fn handle_coding_task_error(&mut self, error_message: String) {
@@ -1021,6 +1120,8 @@ impl App {
             task_id, error_message,
         ));
 
+        self.cleanup_current_task_worktree();
+
         let report = format!(
             "IMPLEMENTATION_BLOCKED\n---\nAgent error: {}",
             error_message,
@@ -1030,6 +1131,178 @@ impl App {
             CodingTaskStatus::ImplementationBlocked,
             report,
         );
+    }
+
+    fn cleanup_current_task_worktree(&mut self) {
+        let workspace = self.confirmed_workspace.clone().unwrap();
+        let coding_state = self.coding_state.as_mut().unwrap();
+        if let Some(info) = coding_state.current_task_worktree.take() {
+            if let Err(err) = coding::remove_worktree(&workspace, &info.worktree_path) {
+                self.add_system_message(&format!("워크트리 제거 실패: {}", err));
+            }
+            if let Err(err) = coding::delete_branch(&workspace, &info.task_branch) {
+                self.add_system_message(&format!("태스크 브랜치 삭제 실패: {}", err));
+            }
+        }
+    }
+
+    fn squash_merge_and_advance(
+        &mut self,
+        task_id: String,
+        task_title: String,
+        report: String,
+    ) {
+        let coding_state = self.coding_state.as_ref().unwrap();
+        let worktree_info = coding_state.current_task_worktree.as_ref().unwrap();
+        let worktree_path = worktree_info.worktree_path.clone();
+        let task_branch = worktree_info.task_branch.clone();
+        let integration_branch = coding_state.integration_branch.clone();
+        let commit_message = format!("[{}] {}", task_id, task_title);
+
+        self.add_system_message(&format!(
+            "[{}] 통합 브랜치로 스퀘시 머지 시작...",
+            task_id,
+        ));
+
+        match coding::squash_merge_task_branch(
+            &worktree_path,
+            &integration_branch,
+            &task_branch,
+            &commit_message,
+        ) {
+            Ok(()) => {
+                self.add_system_message(&format!("[{}] 스퀘시 머지 완료.", task_id));
+                self.cleanup_current_task_worktree();
+                self.save_and_advance_task(
+                    task_id,
+                    CodingTaskStatus::ImplementationSuccess,
+                    report,
+                );
+            }
+            Err(err) => {
+                self.add_system_message(&format!("[{}] 스퀘시 머지 실패: {}", task_id, err));
+                self.cleanup_current_task_worktree();
+                self.save_and_advance_task(
+                    task_id,
+                    CodingTaskStatus::ImplementationBlocked,
+                    format!("{}\n\n---\n스퀘시 머지 실패: {}", report, err),
+                );
+            }
+        }
+    }
+
+    fn start_conflict_resolution(
+        &mut self,
+        task_id: String,
+        conflicted_files: Vec<String>,
+        original_report: String,
+    ) {
+        self.pending_coding_report = Some(original_report);
+
+        let mut client = match self.claude_client.take() {
+            Some(c) => c,
+            None => {
+                self.add_system_message("충돌 해결을 위한 에이전트 세션을 찾을 수 없습니다.");
+                self.pending_coding_report = None;
+                let _ = coding::abort_rebase(
+                    &self
+                        .coding_state
+                        .as_ref()
+                        .unwrap()
+                        .current_task_worktree
+                        .as_ref()
+                        .unwrap()
+                        .worktree_path,
+                );
+                self.cleanup_current_task_worktree();
+                self.save_and_advance_task(
+                    task_id,
+                    CodingTaskStatus::ImplementationBlocked,
+                    "충돌 해결 세션을 찾을 수 없음".to_string(),
+                );
+                return;
+            }
+        };
+
+        let integration_branch = self
+            .coding_state
+            .as_ref()
+            .unwrap()
+            .integration_branch
+            .clone();
+
+        let user_prompt = coding::build_conflict_resolution_prompt(
+            &task_id,
+            &integration_branch,
+            &conflicted_files,
+        );
+
+        let (sender, receiver) = mpsc::channel();
+        self.agent_result_receiver = Some(receiver);
+        self.input_mode = InputMode::Coding;
+        self.thinking_started_at = Instant::now();
+
+        std::thread::spawn(move || {
+            let request = ClaudeCodeRequest {
+                user_prompt,
+                output_schema: coding::conflict_resolution_result_schema(),
+            };
+
+            let stream_sender = sender.clone();
+            let outcome = client
+                .query_streaming::<ConflictResolutionResult, _>(&request, |line| {
+                    let _ = stream_sender.send(AgentStreamMessage::StreamLine(line));
+                })
+                .map(AgentOutcome::ConflictResolutionCompleted)
+                .map_err(|err| err.to_string());
+
+            let _ = sender.send(AgentStreamMessage::Completed(AgentThreadResult {
+                client,
+                outcome,
+            }));
+        });
+    }
+
+    fn handle_conflict_resolution_result(&mut self, result: ConflictResolutionResult) {
+        let (task_id, task_title) = {
+            let coding_state = self.coding_state.as_ref().unwrap();
+            let task = &coding_state.tasks[coding_state.current_task_index];
+            (task.task_id.clone(), task.title.clone())
+        };
+
+        match result.status {
+            ConflictResolutionStatus::ConflictResolved => {
+                self.add_system_message(&format!("[{}] 충돌 해결 완료.", task_id));
+                let report = self
+                    .pending_coding_report
+                    .take()
+                    .unwrap_or(result.report);
+                self.squash_merge_and_advance(task_id, task_title, report);
+            }
+            ConflictResolutionStatus::ConflictResolutionFailed => {
+                self.add_system_message(&format!(
+                    "[{}] 충돌 해결 실패: {}",
+                    task_id, result.report,
+                ));
+                let worktree_path = self
+                    .coding_state
+                    .as_ref()
+                    .unwrap()
+                    .current_task_worktree
+                    .as_ref()
+                    .unwrap()
+                    .worktree_path
+                    .clone();
+                let _ = coding::abort_rebase(&worktree_path);
+                self.pending_coding_report = None;
+                self.cleanup_current_task_worktree();
+                self.save_and_advance_task(
+                    task_id,
+                    CodingTaskStatus::ImplementationBlocked,
+                    format!("충돌 해결 실패: {}", result.report),
+                );
+            }
+        }
     }
 
     fn save_and_advance_task(
@@ -1070,8 +1343,6 @@ impl App {
 
     fn finish_coding_phase(&mut self) {
         let coding_state = self.coding_state.as_ref().unwrap();
-        let workspace = self.confirmed_workspace.clone().unwrap();
-        let worktree_path = coding_state.worktree_path.clone();
         let integration_branch = coding_state.integration_branch.clone();
 
         let success_count = coding_state
@@ -1089,10 +1360,6 @@ impl App {
             "코딩 단계 완료. 성공: {}, 차단: {}",
             success_count, blocked_count,
         ));
-
-        if let Err(err) = coding::remove_worktree(&workspace, &worktree_path) {
-            self.add_system_message(&format!("워크트리 제거 실패: {}", err));
-        }
 
         self.add_system_message(&format!(
             "통합 브랜치가 유지됩니다: {}",

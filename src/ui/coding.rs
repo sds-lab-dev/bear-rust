@@ -41,8 +41,32 @@ pub struct CodingPhaseState {
     pub tasks: Vec<CodingTask>,
     pub current_task_index: usize,
     pub task_reports: Vec<TaskReport>,
-    pub worktree_path: PathBuf,
     pub integration_branch: String,
+    pub current_task_worktree: Option<TaskWorktreeInfo>,
+}
+
+pub struct TaskWorktreeInfo {
+    pub worktree_path: PathBuf,
+    pub task_branch: String,
+}
+
+pub enum RebaseOutcome {
+    Success,
+    Conflict { conflicted_files: Vec<String> },
+}
+
+#[derive(Debug, Deserialize)]
+pub struct ConflictResolutionResult {
+    pub status: ConflictResolutionStatus,
+    pub report: String,
+}
+
+#[derive(Debug, Clone, Deserialize, PartialEq)]
+pub enum ConflictResolutionStatus {
+    #[serde(rename = "CONFLICT_RESOLVED")]
+    ConflictResolved,
+    #[serde(rename = "CONFLICT_RESOLUTION_FAILED")]
+    ConflictResolutionFailed,
 }
 
 pub struct TaskReport {
@@ -91,6 +115,23 @@ pub fn coding_task_result_schema() -> serde_json::Value {
             "status": {
                 "type": "string",
                 "enum": ["IMPLEMENTATION_SUCCESS", "IMPLEMENTATION_BLOCKED"]
+            },
+            "report": {
+                "type": "string"
+            }
+        },
+        "required": ["status", "report"],
+        "additionalProperties": false
+    })
+}
+
+pub fn conflict_resolution_result_schema() -> serde_json::Value {
+    serde_json::json!({
+        "type": "object",
+        "properties": {
+            "status": {
+                "type": "string",
+                "enum": ["CONFLICT_RESOLVED", "CONFLICT_RESOLUTION_FAILED"]
             },
             "report": {
                 "type": "string"
@@ -562,6 +603,45 @@ pub fn build_coding_task_prompt(
 }
 
 // ---------------------------------------------------------------------------
+// Prompts – Conflict Resolution
+// ---------------------------------------------------------------------------
+
+const CONFLICT_RESOLUTION_PROMPT_TEMPLATE: &str = r#"A rebase onto the integration branch has produced merge conflicts that you must resolve.
+
+Integration branch: {{INTEGRATION_BRANCH}}
+Task ID: {{TASK_ID}}
+
+Conflicted files:
+{{CONFLICTED_FILES}}
+
+Instructions:
+1. Examine each conflicted file and resolve the merge conflicts.
+2. After resolving all conflicts, stage the resolved files with `git add` for each file.
+3. Complete the rebase with `git rebase --continue`.
+4. If the rebase continues and produces more conflicts, resolve them and repeat.
+5. If resolution is not possible, run `git rebase --abort` and report failure.
+
+Output MUST be valid JSON conforming to the provided JSON Schema.
+Output MUST contain ONLY the JSON object, with no extra text."#;
+
+pub fn build_conflict_resolution_prompt(
+    task_id: &str,
+    integration_branch: &str,
+    conflicted_files: &[String],
+) -> String {
+    let files_section = conflicted_files
+        .iter()
+        .map(|f| format!("  - {}", f))
+        .collect::<Vec<_>>()
+        .join("\n");
+
+    CONFLICT_RESOLUTION_PROMPT_TEMPLATE
+        .replace("{{INTEGRATION_BRANCH}}", integration_branch)
+        .replace("{{TASK_ID}}", task_id)
+        .replace("{{CONFLICTED_FILES}}", &files_section)
+}
+
+// ---------------------------------------------------------------------------
 // Git Operations
 // ---------------------------------------------------------------------------
 
@@ -636,6 +716,147 @@ pub fn remove_worktree(
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
         return Err(format!("failed to remove worktree: {}", stderr.trim()));
+    }
+
+    Ok(())
+}
+
+pub fn create_task_branch(
+    workspace: &Path,
+    integration_branch: &str,
+    task_id: &str,
+) -> Result<String, String> {
+    let branch_name = format!("bear/task/{}-{}", task_id, Uuid::new_v4());
+
+    let output = Command::new("git")
+        .current_dir(workspace)
+        .args(["branch", &branch_name, integration_branch])
+        .output()
+        .map_err(|e| format!("failed to execute git branch: {}", e))?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        return Err(format!("failed to create task branch: {}", stderr.trim()));
+    }
+
+    Ok(branch_name)
+}
+
+pub fn rebase_onto_integration(
+    worktree_path: &Path,
+    integration_branch: &str,
+) -> Result<RebaseOutcome, String> {
+    let output = Command::new("git")
+        .current_dir(worktree_path)
+        .args(["rebase", integration_branch])
+        .output()
+        .map_err(|e| format!("failed to execute git rebase: {}", e))?;
+
+    if output.status.success() {
+        return Ok(RebaseOutcome::Success);
+    }
+
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    if stderr.contains("CONFLICT") || stderr.contains("could not apply") {
+        let conflicted_files = list_conflicted_files(worktree_path)?;
+        return Ok(RebaseOutcome::Conflict { conflicted_files });
+    }
+
+    Err(format!("git rebase failed: {}", stderr.trim()))
+}
+
+pub fn list_conflicted_files(
+    worktree_path: &Path,
+) -> Result<Vec<String>, String> {
+    let output = Command::new("git")
+        .current_dir(worktree_path)
+        .args(["diff", "--name-only", "--diff-filter=U"])
+        .output()
+        .map_err(|e| format!("failed to execute git diff: {}", e))?;
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let files: Vec<String> = stdout
+        .lines()
+        .filter(|line| !line.is_empty())
+        .map(String::from)
+        .collect();
+
+    Ok(files)
+}
+
+pub fn abort_rebase(worktree_path: &Path) -> Result<(), String> {
+    let output = Command::new("git")
+        .current_dir(worktree_path)
+        .args(["rebase", "--abort"])
+        .output()
+        .map_err(|e| format!("failed to execute git rebase --abort: {}", e))?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        return Err(format!("failed to abort rebase: {}", stderr.trim()));
+    }
+
+    Ok(())
+}
+
+pub fn squash_merge_task_branch(
+    worktree_path: &Path,
+    integration_branch: &str,
+    task_branch: &str,
+    commit_message: &str,
+) -> Result<(), String> {
+    let checkout_output = Command::new("git")
+        .current_dir(worktree_path)
+        .args(["checkout", integration_branch])
+        .output()
+        .map_err(|e| format!("failed to execute git checkout: {}", e))?;
+
+    if !checkout_output.status.success() {
+        let stderr = String::from_utf8_lossy(&checkout_output.stderr);
+        return Err(format!(
+            "failed to checkout integration branch: {}",
+            stderr.trim()
+        ));
+    }
+
+    let merge_output = Command::new("git")
+        .current_dir(worktree_path)
+        .args(["merge", "--squash", task_branch])
+        .output()
+        .map_err(|e| format!("failed to execute git merge --squash: {}", e))?;
+
+    if !merge_output.status.success() {
+        let stderr = String::from_utf8_lossy(&merge_output.stderr);
+        return Err(format!("failed to squash merge: {}", stderr.trim()));
+    }
+
+    let commit_output = Command::new("git")
+        .current_dir(worktree_path)
+        .args(["commit", "-m", commit_message])
+        .output()
+        .map_err(|e| format!("failed to execute git commit: {}", e))?;
+
+    if !commit_output.status.success() {
+        let stderr = String::from_utf8_lossy(&commit_output.stderr);
+        return Err(format!("failed to commit squash merge: {}", stderr.trim()));
+    }
+
+    Ok(())
+}
+
+pub fn delete_branch(
+    workspace: &Path,
+    branch_name: &str,
+) -> Result<(), String> {
+    let output = Command::new("git")
+        .current_dir(workspace)
+        .args(["branch", "-D", branch_name])
+        .output()
+        .map_err(|e| format!("failed to execute git branch -D: {}", e))?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        return Err(format!("failed to delete branch: {}", stderr.trim()));
     }
 
     Ok(())
@@ -891,5 +1112,310 @@ mod tests {
         let paths = collect_upstream_report_paths(&task, &[]);
 
         assert!(paths.is_empty());
+    }
+
+    // -----------------------------------------------------------------------
+    // Git operation tests
+    // -----------------------------------------------------------------------
+
+    fn init_git_repo(dir: &Path) {
+        Command::new("git")
+            .current_dir(dir)
+            .args(["init"])
+            .output()
+            .unwrap();
+        Command::new("git")
+            .current_dir(dir)
+            .args(["config", "user.email", "test@test.com"])
+            .output()
+            .unwrap();
+        Command::new("git")
+            .current_dir(dir)
+            .args(["config", "user.name", "Test"])
+            .output()
+            .unwrap();
+    }
+
+    fn make_commit(dir: &Path, filename: &str, content: &str, message: &str) {
+        fs::write(dir.join(filename), content).unwrap();
+        Command::new("git")
+            .current_dir(dir)
+            .args(["add", filename])
+            .output()
+            .unwrap();
+        Command::new("git")
+            .current_dir(dir)
+            .args(["commit", "-m", message])
+            .output()
+            .unwrap();
+    }
+
+    #[test]
+    fn create_task_branch_from_integration() {
+        let temp_dir = TempDir::new().unwrap();
+        let workspace = temp_dir.path();
+        init_git_repo(workspace);
+        make_commit(workspace, "init.txt", "init", "initial commit");
+
+        let integration = create_integration_branch(workspace, "test-session").unwrap();
+        let task_branch = create_task_branch(workspace, &integration, "TASK-00").unwrap();
+
+        assert!(task_branch.starts_with("bear/task/TASK-00-"));
+
+        let output = Command::new("git")
+            .current_dir(workspace)
+            .args(["branch", "--list", &task_branch])
+            .output()
+            .unwrap();
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        assert!(!stdout.trim().is_empty());
+    }
+
+    #[test]
+    fn rebase_onto_integration_success() {
+        let temp_dir = TempDir::new().unwrap();
+        let workspace = temp_dir.path();
+        init_git_repo(workspace);
+        make_commit(workspace, "init.txt", "init", "initial commit");
+
+        let integration = create_integration_branch(workspace, "test").unwrap();
+        let task_branch = create_task_branch(workspace, &integration, "TASK-00").unwrap();
+        let worktree_path = create_worktree(workspace, &task_branch).unwrap();
+        make_commit(&worktree_path, "task.txt", "task content", "task commit");
+
+        let result = rebase_onto_integration(&worktree_path, &integration).unwrap();
+
+        assert!(matches!(result, RebaseOutcome::Success));
+
+        remove_worktree(workspace, &worktree_path).unwrap();
+    }
+
+    #[test]
+    fn rebase_onto_integration_conflict() {
+        let temp_dir = TempDir::new().unwrap();
+        let workspace = temp_dir.path();
+        init_git_repo(workspace);
+        make_commit(workspace, "shared.txt", "original", "initial commit");
+
+        let integration = create_integration_branch(workspace, "test").unwrap();
+        let task_branch = create_task_branch(workspace, &integration, "TASK-00").unwrap();
+        let worktree_path = create_worktree(workspace, &task_branch).unwrap();
+
+        // 통합 브랜치에서 같은 파일 수정 (메인 워크스페이스에서 체크아웃해서 커밋)
+        Command::new("git")
+            .current_dir(workspace)
+            .args(["checkout", &integration])
+            .output()
+            .unwrap();
+        make_commit(workspace, "shared.txt", "integration change", "integration commit");
+        Command::new("git")
+            .current_dir(workspace)
+            .args(["checkout", "main"])
+            .output()
+            .unwrap();
+
+        // 태스크 브랜치에서 같은 파일을 다르게 수정
+        make_commit(&worktree_path, "shared.txt", "task change", "task commit");
+
+        let result = rebase_onto_integration(&worktree_path, &integration).unwrap();
+
+        assert!(matches!(result, RebaseOutcome::Conflict { .. }));
+        if let RebaseOutcome::Conflict { conflicted_files } = result {
+            assert!(conflicted_files.contains(&"shared.txt".to_string()));
+        }
+
+        abort_rebase(&worktree_path).unwrap();
+        remove_worktree(workspace, &worktree_path).unwrap();
+    }
+
+    #[test]
+    fn abort_rebase_restores_clean_state() {
+        let temp_dir = TempDir::new().unwrap();
+        let workspace = temp_dir.path();
+        init_git_repo(workspace);
+        make_commit(workspace, "shared.txt", "original", "initial commit");
+
+        let integration = create_integration_branch(workspace, "test").unwrap();
+        let task_branch = create_task_branch(workspace, &integration, "TASK-00").unwrap();
+        let worktree_path = create_worktree(workspace, &task_branch).unwrap();
+
+        Command::new("git")
+            .current_dir(workspace)
+            .args(["checkout", &integration])
+            .output()
+            .unwrap();
+        make_commit(workspace, "shared.txt", "integration", "integration commit");
+        Command::new("git")
+            .current_dir(workspace)
+            .args(["checkout", "main"])
+            .output()
+            .unwrap();
+
+        make_commit(&worktree_path, "shared.txt", "task", "task commit");
+        rebase_onto_integration(&worktree_path, &integration).unwrap();
+        abort_rebase(&worktree_path).unwrap();
+
+        // 리베이스 중단 후 정상 상태 확인
+        let status = Command::new("git")
+            .current_dir(&worktree_path)
+            .args(["status", "--porcelain"])
+            .output()
+            .unwrap();
+        let stdout = String::from_utf8_lossy(&status.stdout);
+        assert!(stdout.trim().is_empty());
+
+        remove_worktree(workspace, &worktree_path).unwrap();
+    }
+
+    #[test]
+    fn squash_merge_task_branch_success() {
+        let temp_dir = TempDir::new().unwrap();
+        let workspace = temp_dir.path();
+        init_git_repo(workspace);
+        make_commit(workspace, "init.txt", "init", "initial commit");
+
+        let integration = create_integration_branch(workspace, "test").unwrap();
+        let task_branch = create_task_branch(workspace, &integration, "TASK-00").unwrap();
+        let worktree_path = create_worktree(workspace, &task_branch).unwrap();
+
+        make_commit(&worktree_path, "feature.txt", "feature", "feature commit");
+        make_commit(&worktree_path, "feature2.txt", "feature2", "feature2 commit");
+
+        rebase_onto_integration(&worktree_path, &integration).unwrap();
+
+        squash_merge_task_branch(
+            &worktree_path,
+            &integration,
+            &task_branch,
+            "[TASK-00] Test squash merge",
+        )
+        .unwrap();
+
+        // 통합 브랜치에 스퀘시 커밋이 1개 존재하는지 확인
+        let log_output = Command::new("git")
+            .current_dir(&worktree_path)
+            .args(["log", "--oneline", &format!("{}..HEAD", "main")])
+            .output()
+            .unwrap();
+        let stdout = String::from_utf8_lossy(&log_output.stdout);
+        let commit_lines: Vec<&str> = stdout.lines().collect();
+        assert_eq!(commit_lines.len(), 1);
+        assert!(commit_lines[0].contains("[TASK-00]"));
+
+        remove_worktree(workspace, &worktree_path).unwrap();
+    }
+
+    #[test]
+    fn delete_branch_removes_branch() {
+        let temp_dir = TempDir::new().unwrap();
+        let workspace = temp_dir.path();
+        init_git_repo(workspace);
+        make_commit(workspace, "init.txt", "init", "initial commit");
+
+        let integration = create_integration_branch(workspace, "test").unwrap();
+        let task_branch = create_task_branch(workspace, &integration, "TASK-00").unwrap();
+
+        delete_branch(workspace, &task_branch).unwrap();
+
+        let output = Command::new("git")
+            .current_dir(workspace)
+            .args(["branch", "--list", &task_branch])
+            .output()
+            .unwrap();
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        assert!(stdout.trim().is_empty());
+    }
+
+    #[test]
+    fn list_conflicted_files_returns_expected() {
+        let temp_dir = TempDir::new().unwrap();
+        let workspace = temp_dir.path();
+        init_git_repo(workspace);
+        make_commit(workspace, "shared.txt", "original", "initial commit");
+
+        let integration = create_integration_branch(workspace, "test").unwrap();
+        let task_branch = create_task_branch(workspace, &integration, "TASK-00").unwrap();
+        let worktree_path = create_worktree(workspace, &task_branch).unwrap();
+
+        Command::new("git")
+            .current_dir(workspace)
+            .args(["checkout", &integration])
+            .output()
+            .unwrap();
+        make_commit(workspace, "shared.txt", "integration", "integration commit");
+        Command::new("git")
+            .current_dir(workspace)
+            .args(["checkout", "main"])
+            .output()
+            .unwrap();
+
+        make_commit(&worktree_path, "shared.txt", "task", "task commit");
+        rebase_onto_integration(&worktree_path, &integration).unwrap();
+
+        let files = list_conflicted_files(&worktree_path).unwrap();
+        assert_eq!(files, vec!["shared.txt"]);
+
+        abort_rebase(&worktree_path).unwrap();
+        remove_worktree(workspace, &worktree_path).unwrap();
+    }
+
+    // -----------------------------------------------------------------------
+    // Conflict resolution schema / prompt / deserialization tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn conflict_resolution_result_schema_is_valid_json() {
+        let schema = conflict_resolution_result_schema();
+        assert_eq!(schema["type"], "object");
+
+        let status_enum = schema["properties"]["status"]["enum"]
+            .as_array()
+            .unwrap();
+        assert!(status_enum.iter().any(|v| v == "CONFLICT_RESOLVED"));
+        assert!(status_enum
+            .iter()
+            .any(|v| v == "CONFLICT_RESOLUTION_FAILED"));
+        assert!(schema["properties"]["report"].is_object());
+    }
+
+    #[test]
+    fn deserialize_conflict_resolution_result_resolved() {
+        let json = serde_json::json!({
+            "status": "CONFLICT_RESOLVED",
+            "report": "충돌 해결 완료"
+        });
+
+        let result: ConflictResolutionResult = serde_json::from_value(json).unwrap();
+        assert_eq!(result.status, ConflictResolutionStatus::ConflictResolved);
+        assert!(result.report.contains("충돌 해결 완료"));
+    }
+
+    #[test]
+    fn deserialize_conflict_resolution_result_failed() {
+        let json = serde_json::json!({
+            "status": "CONFLICT_RESOLUTION_FAILED",
+            "report": "충돌 해결 실패"
+        });
+
+        let result: ConflictResolutionResult = serde_json::from_value(json).unwrap();
+        assert_eq!(
+            result.status,
+            ConflictResolutionStatus::ConflictResolutionFailed
+        );
+    }
+
+    #[test]
+    fn conflict_resolution_prompt_contains_all_fields() {
+        let prompt = build_conflict_resolution_prompt(
+            "TASK-01",
+            "bear/integration/test-abc",
+            &["src/main.rs".to_string(), "src/lib.rs".to_string()],
+        );
+
+        assert!(prompt.contains("TASK-01"));
+        assert!(prompt.contains("bear/integration/test-abc"));
+        assert!(prompt.contains("src/main.rs"));
+        assert!(prompt.contains("src/lib.rs"));
+        assert!(prompt.contains("git rebase --continue"));
     }
 }
