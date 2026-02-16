@@ -445,7 +445,11 @@ impl App {
         }
 
         let workspace = self.confirmed_workspace.clone().unwrap();
-        let client = ClaudeCodeClient::new(self.config.api_key().to_string(), vec![workspace])
+        let client = ClaudeCodeClient::new(
+            self.config.api_key().to_string(),
+            vec![workspace],
+            Some(clarification::system_prompt().to_string()),
+        )
             .map_err(|err| err.to_string())?;
 
         self.claude_client = Some(client);
@@ -474,9 +478,7 @@ impl App {
             }
 
             let request = ClaudeCodeRequest {
-                system_prompt: Some(clarification::system_prompt().to_string()),
                 user_prompt: clarification::build_user_prompt(&original_request, &qa_log),
-
                 output_schema: clarification::clarification_schema(),
             };
 
@@ -543,9 +545,7 @@ impl App {
             };
 
             let request = ClaudeCodeRequest {
-                system_prompt: Some(clarification::system_prompt().to_string()),
                 user_prompt,
-
                 output_schema: spec_writing::spec_writing_schema(),
             };
 
@@ -651,6 +651,7 @@ impl App {
 
         if is_initial {
             client.reset_session();
+            client.set_system_prompt(Some(planning::system_prompt().to_string()));
         }
 
         let approved_spec = self.approved_spec.clone().unwrap_or_default();
@@ -679,9 +680,7 @@ impl App {
             };
 
             let request = ClaudeCodeRequest {
-                system_prompt: Some(planning::system_prompt().to_string()),
                 user_prompt,
-
                 output_schema: planning::plan_writing_schema(),
             };
 
@@ -783,6 +782,7 @@ impl App {
     fn start_task_extraction(&mut self) {
         let mut client = self.claude_client.take().expect("client must be available");
         client.reset_session();
+        client.set_system_prompt(Some(coding::task_extraction_system_prompt().to_string()));
 
         let plan_path = match (&self.confirmed_workspace, &self.session_date_dir, &self.session_name) {
             (Some(ws), Some(date), Some(name)) => {
@@ -798,9 +798,7 @@ impl App {
 
         std::thread::spawn(move || {
             let request = ClaudeCodeRequest {
-                system_prompt: Some(coding::task_extraction_system_prompt().to_string()),
                 user_prompt: coding::build_task_extraction_prompt(&plan_path),
-
                 output_schema: coding::task_extraction_schema(),
             };
 
@@ -943,6 +941,7 @@ impl App {
         let mut client = match ClaudeCodeClient::new(
             api_key,
             vec![worktree_path.clone()],
+            Some(coding::coding_agent_system_prompt().to_string()),
         ) {
             Ok(c) => c,
             Err(err) => {
@@ -970,9 +969,7 @@ impl App {
             );
 
             let request = ClaudeCodeRequest {
-                system_prompt: Some(coding::coding_agent_system_prompt().to_string()),
                 user_prompt,
-
                 output_schema: coding::coding_task_result_schema(),
             };
 
@@ -1282,7 +1279,6 @@ fn find_cursor_visual_position(
 
 fn generate_session_name(client: &mut ClaudeCodeClient, requirements: &str) -> String {
     let request = ClaudeCodeRequest {
-        system_prompt: None,
         user_prompt: session_naming::build_session_name_prompt(requirements),
         output_schema: session_naming::session_name_schema(),
     };

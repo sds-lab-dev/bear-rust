@@ -17,7 +17,6 @@ const TOOLS_LIST: &str = "AskUserQuestion,Bash,TaskOutput,Edit,ExitPlanMode,Glob
     WebFetch,WebSearch,Write,LSP";
 
 pub struct ClaudeCodeRequest {
-    pub system_prompt: Option<String>,
     pub user_prompt: String,
     pub output_schema: serde_json::Value,
 }
@@ -73,6 +72,8 @@ pub struct ClaudeCodeClient {
     additional_work_directories: Vec<PathBuf>,
     session_id: Option<String>,
     working_directory: Option<PathBuf>,
+    system_prompt: Option<String>,
+    pending_system_prompt: Option<String>,
 }
 
 impl ClaudeCodeClient {
@@ -88,9 +89,18 @@ impl ClaudeCodeClient {
         self.working_directory = Some(path);
     }
 
+    pub fn set_system_prompt(&mut self, prompt: Option<String>) {
+        self.system_prompt = prompt;
+    }
+
+    pub fn append_system_prompt(&mut self, prompt: String) {
+        self.pending_system_prompt = Some(prompt);
+    }
+
     pub fn new(
         api_key: String,
         additional_work_directories: Vec<PathBuf>,
+        system_prompt: Option<String>,
     ) -> Result<Self, ClaudeCodeClientError> {
         let binary_path = binary_finder::find_claude_binary()?;
 
@@ -111,10 +121,12 @@ impl ClaudeCodeClient {
             additional_work_directories,
             session_id: None,
             working_directory: None,
+            system_prompt,
+            pending_system_prompt: None,
         })
     }
 
-    fn build_base_command(&self, request: &ClaudeCodeRequest) -> (Command, Option<String>) {
+    fn build_base_command(&mut self, request: &ClaudeCodeRequest) -> (Command, Option<String>, Option<String>) {
         let model_effort_level = "high";
         let disable_auto_memory = "0";  // 0 = force enable.
         let disable_feedback_survey = "1";
@@ -157,14 +169,29 @@ impl ClaudeCodeClient {
 
         command.arg("--model").arg("claude-opus-4-6");
 
-        if let Some(system_prompt) = &request.system_prompt {
-            command.arg("--append-system-prompt").arg(system_prompt);
+        // 새 세션인 경우에만 기본 시스템 프롬프트를 전송한다.
+        // 일회성 추가 프롬프트는 항상 전송 후 제거한다.
+        let mut prompt_parts: Vec<String> = Vec::new();
+        if self.session_id.is_none()
+            && let Some(sp) = &self.system_prompt
+        {
+            prompt_parts.push(sp.clone());
         }
+        if let Some(sp) = self.pending_system_prompt.take() {
+            prompt_parts.push(sp);
+        }
+        let sent_system_prompt = if prompt_parts.is_empty() {
+            None
+        } else {
+            let combined = prompt_parts.join("\n\n");
+            command.arg("--append-system-prompt").arg(&combined);
+            Some(combined)
+        };
 
         let output_schema_string = request.output_schema.to_string();
         command.arg("--json-schema").arg(&output_schema_string);
 
-        (command, new_session_id)
+        (command, new_session_id, sent_system_prompt)
     }
 
     fn log_invocation_details(
@@ -173,6 +200,7 @@ impl ClaudeCodeClient {
         request: &ClaudeCodeRequest,
         new_session_id: &Option<String>,
         extra_args: &[&str],
+        sent_system_prompt: &Option<String>,
     ) {
         let loc = "ClaudeCodeClient::log_invocation_details";
         let log = |msg: String| logger::write_log(loc, &msg);
@@ -229,7 +257,7 @@ impl ClaudeCodeClient {
             ));
         }
 
-        if let Some(system_prompt) = &request.system_prompt {
+        if let Some(system_prompt) = sent_system_prompt {
             log(format!(
                 "[{}] 시스템 프롬프트 (--append-system-prompt, {} bytes):\n{}",
                 mode,
@@ -255,7 +283,7 @@ impl ClaudeCodeClient {
         &mut self,
         request: &ClaudeCodeRequest,
     ) -> Result<T, ClaudeCodeClientError> {
-        let (mut command, new_session_id) = self.build_base_command(request);
+        let (mut command, new_session_id, sent_system_prompt) = self.build_base_command(request);
         command.arg("--output-format").arg("json");
         command.arg(&request.user_prompt);
 
@@ -265,6 +293,7 @@ impl ClaudeCodeClient {
             request,
             &new_session_id,
             &["--output-format", "json"],
+            &sent_system_prompt,
         );
 
         let output = command.output().map_err(|err| {
@@ -295,7 +324,7 @@ impl ClaudeCodeClient {
             .as_deref()
             .or(self.session_id.as_deref())
             .unwrap_or("unknown");
-        write_debug_log(request, command_session_id, &output.stdout);
+        write_debug_log(&sent_system_prompt, &request.user_prompt, command_session_id, &output.stdout);
 
         let parsed: ParsedOutput<T> = parse_cli_output(&output.stdout)?;
 
@@ -315,7 +344,7 @@ impl ClaudeCodeClient {
         T: DeserializeOwned,
         F: Fn(String),
     {
-        let (mut command, new_session_id) = self.build_base_command(request);
+        let (mut command, new_session_id, sent_system_prompt) = self.build_base_command(request);
         command.arg("--output-format").arg("stream-json");
         command.arg("--verbose");
         command.arg("--include-partial-messages");
@@ -332,6 +361,7 @@ impl ClaudeCodeClient {
                 "--verbose",
                 "--include-partial-messages",
             ],
+            &sent_system_prompt,
         );
 
         let mut child = command
@@ -442,7 +472,7 @@ impl ClaudeCodeClient {
             .or(self.session_id.as_deref())
             .unwrap_or("unknown");
         let raw_output = raw_lines.join("\n");
-        write_debug_log(request, command_session_id, raw_output.as_bytes());
+        write_debug_log(&sent_system_prompt, &request.user_prompt, command_session_id, raw_output.as_bytes());
 
         let result_json = result_value.ok_or(ClaudeCodeClientError::NoResultMessage)?;
         let response: CliResponse = serde_json::from_value(result_json)?;
@@ -471,15 +501,20 @@ impl ClaudeCodeClient {
     }
 }
 
-fn write_debug_log(request: &ClaudeCodeRequest, session_id: &str, cli_stdout: &[u8]) {
+fn write_debug_log(
+    system_prompt: &Option<String>,
+    user_prompt: &str,
+    session_id: &str,
+    cli_stdout: &[u8],
+) {
     let path = format!("/tmp/bear-{}.log", session_id);
-    let system_prompt = request.system_prompt.as_deref().unwrap_or("");
+    let system_prompt_text = system_prompt.as_deref().unwrap_or("");
     let cli_output = String::from_utf8_lossy(cli_stdout);
 
     let content = format!(
         "<SYSTEM_PROMPT>\n{}\n</SYSTEM_PROMPT>\n\n<USER_PROMPT>\n{}\n</USER_PROMPT>\n\n<CLAUDE_CODE_CLI_OUTPUT>\n{}\n</CLAUDE_CODE_CLI_OUTPUT>\n",
-        system_prompt,
-        request.user_prompt,
+        system_prompt_text,
+        user_prompt,
         cli_output,
     );
 
