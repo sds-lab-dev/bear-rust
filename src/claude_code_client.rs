@@ -169,12 +169,10 @@ impl ClaudeCodeClient {
 
         command.arg("--model").arg("claude-opus-4-6");
 
-        // 새 세션인 경우에만 기본 시스템 프롬프트를 전송한다.
-        // 일회성 추가 프롬프트는 항상 전송 후 제거한다.
+        // 커스텀 시스템 프롬프트는 기존 세션 컨텍스트에 저장되지 않기 때문에 과거 세션을 불러와서
+        // 재사용하는 경우에는 기존에 입력했던 커스텀 시스템 프롬프트를 다시 입력해주어야 한다.
         let mut prompt_parts: Vec<String> = Vec::new();
-        if self.session_id.is_none()
-            && let Some(sp) = &self.system_prompt
-        {
+        if let Some(sp) = &self.system_prompt {
             prompt_parts.push(sp.clone());
         }
         if let Some(sp) = self.pending_system_prompt.take() {
