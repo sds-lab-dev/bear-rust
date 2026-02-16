@@ -3,6 +3,7 @@ mod clarification;
 pub mod coding;
 mod error;
 mod event;
+mod file_validation;
 mod renderer;
 mod planning;
 mod session_naming;

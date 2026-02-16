@@ -201,7 +201,12 @@ impl TerminalWriter {
         let mut line_count: u16 = 0;
         let mut cursor_position_on_screen: Option<(u16, u16)> = None;
 
-        if app.is_waiting_for_input() {
+        if app.is_mode_selection() {
+            line_count += write_mode_selection_menu(
+                &mut self.stdout,
+                app.selected_mode_index(),
+            )?;
+        } else if app.is_waiting_for_input() {
             let result = write_input_lines(
                 &mut self.stdout,
                 &app.input_buffer,
@@ -414,6 +419,52 @@ fn build_right_column(max_width: usize) -> Vec<(String, style::Color, bool)> {
         lines.push((line.clone(), style::Color::DarkGrey, false));
     }
     lines
+}
+
+const MODE_LABELS: [&str; 3] = [
+    "1. 처음부터 만들기",
+    "2. 스펙 파일 있음",
+    "3. 스펙 및 플랜 파일 있음",
+];
+
+fn write_mode_selection_menu(
+    stdout: &mut Stdout,
+    selected_index: usize,
+) -> Result<u16, std::io::Error> {
+    let mut line_count: u16 = 0;
+
+    for (i, label) in MODE_LABELS.iter().enumerate() {
+        let is_selected = i == selected_index;
+        let marker = if is_selected { "> " } else { "  " };
+
+        queue!(
+            stdout,
+            style::SetForegroundColor(if is_selected {
+                style::Color::Cyan
+            } else {
+                style::Color::Reset
+            }),
+        )?;
+        if is_selected {
+            queue!(stdout, style::SetAttribute(style::Attribute::Bold))?;
+        }
+        queue!(
+            stdout,
+            style::Print(marker),
+            style::Print(label),
+        )?;
+        if is_selected {
+            queue!(stdout, style::SetAttribute(style::Attribute::NormalIntensity))?;
+        }
+        queue!(
+            stdout,
+            style::ResetColor,
+            style::Print("\r\n"),
+        )?;
+        line_count += 1;
+    }
+
+    Ok(line_count)
 }
 
 fn wrap_words(text: &str, max_width: usize) -> Vec<String> {
