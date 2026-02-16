@@ -43,6 +43,7 @@ pub struct CodingPhaseState {
     pub task_reports: Vec<TaskReport>,
     pub integration_branch: String,
     pub current_task_worktree: Option<TaskWorktreeInfo>,
+    pub build_test_commands: Option<BuildTestCommands>,
 }
 
 pub struct TaskWorktreeInfo {
@@ -74,6 +75,32 @@ pub struct TaskReport {
     pub status: CodingTaskStatus,
     pub report: String,
     pub report_file_path: PathBuf,
+}
+
+#[derive(Clone)]
+pub struct BuildTestCommands {
+    pub build: String,
+    pub test: String,
+}
+
+pub enum BuildTestOutcome {
+    Success,
+    BuildFailed { output: String },
+    TestFailed { output: String },
+}
+
+#[derive(Debug, Deserialize)]
+pub struct BuildTestRepairResult {
+    pub status: BuildTestRepairStatus,
+    pub report: String,
+}
+
+#[derive(Debug, Clone, Deserialize, PartialEq)]
+pub enum BuildTestRepairStatus {
+    #[serde(rename = "BUILD_TEST_FIXED")]
+    Fixed,
+    #[serde(rename = "BUILD_TEST_FIX_FAILED")]
+    FixFailed,
 }
 
 // ---------------------------------------------------------------------------
@@ -132,6 +159,23 @@ pub fn conflict_resolution_result_schema() -> serde_json::Value {
             "status": {
                 "type": "string",
                 "enum": ["CONFLICT_RESOLVED", "CONFLICT_RESOLUTION_FAILED"]
+            },
+            "report": {
+                "type": "string"
+            }
+        },
+        "required": ["status", "report"],
+        "additionalProperties": false
+    })
+}
+
+pub fn build_test_repair_result_schema() -> serde_json::Value {
+    serde_json::json!({
+        "type": "object",
+        "properties": {
+            "status": {
+                "type": "string",
+                "enum": ["BUILD_TEST_FIXED", "BUILD_TEST_FIX_FAILED"]
             },
             "report": {
                 "type": "string"
@@ -469,7 +513,6 @@ You MUST decide on one of the following status markers based on your implementat
 <<<
 # Metadata
 - Workspace: <path of the workspace>
-- Repository: <repository name>
 - Base Branch: <branch name> (the branch that this worktree is based on)
 - Base Commit: <commit hash> (the commit that this worktree is based on)
 
@@ -642,6 +685,41 @@ pub fn build_conflict_resolution_prompt(
 }
 
 // ---------------------------------------------------------------------------
+// Prompts – Build/Test Repair
+// ---------------------------------------------------------------------------
+
+const BUILD_TEST_REPAIR_PROMPT_TEMPLATE: &str = r#"After rebasing onto the integration branch, the build or tests failed for task {{TASK_ID}}.
+
+Build command: {{BUILD_COMMAND}}
+Test command: {{TEST_COMMAND}}
+
+Error output:
+{{ERROR_OUTPUT}}
+
+Instructions:
+1. Analyze the error output to identify the root cause.
+2. Fix the code so that the build and tests pass.
+3. Run the build command (`{{BUILD_COMMAND}}`) and verify it succeeds.
+4. Run the test command (`{{TEST_COMMAND}}`) and verify all tests pass.
+5. If you cannot fix the issue, report failure with a clear explanation.
+
+Output MUST be valid JSON conforming to the provided JSON Schema.
+Output MUST contain ONLY the JSON object, with no extra text."#;
+
+pub fn build_build_test_repair_prompt(
+    task_id: &str,
+    build_command: &str,
+    test_command: &str,
+    error_output: &str,
+) -> String {
+    BUILD_TEST_REPAIR_PROMPT_TEMPLATE
+        .replace("{{TASK_ID}}", task_id)
+        .replace("{{BUILD_COMMAND}}", build_command)
+        .replace("{{TEST_COMMAND}}", test_command)
+        .replace("{{ERROR_OUTPUT}}", error_output)
+}
+
+// ---------------------------------------------------------------------------
 // Git Operations
 // ---------------------------------------------------------------------------
 
@@ -797,6 +875,107 @@ pub fn abort_rebase(worktree_path: &Path) -> Result<(), String> {
     }
 
     Ok(())
+}
+
+pub fn detect_build_commands(worktree_path: &Path) -> Option<BuildTestCommands> {
+    let makefile_path = worktree_path.join("Makefile");
+    if makefile_path.exists()
+        && let Ok(content) = fs::read_to_string(&makefile_path)
+    {
+        let has_build = content.lines().any(|line| line.starts_with("build:"));
+        let has_test = content.lines().any(|line| line.starts_with("test:"));
+        if has_build && has_test {
+            return Some(BuildTestCommands {
+                build: "make build".to_string(),
+                test: "make test".to_string(),
+            });
+        }
+    }
+
+    if worktree_path.join("Cargo.toml").exists() {
+        return Some(BuildTestCommands {
+            build: "cargo build".to_string(),
+            test: "cargo test".to_string(),
+        });
+    }
+
+    if let Some(commands) = detect_npm_commands(worktree_path) {
+        return Some(commands);
+    }
+
+    if worktree_path.join("go.mod").exists() {
+        return Some(BuildTestCommands {
+            build: "go build ./...".to_string(),
+            test: "go test ./...".to_string(),
+        });
+    }
+
+    None
+}
+
+fn detect_npm_commands(worktree_path: &Path) -> Option<BuildTestCommands> {
+    let package_json_path = worktree_path.join("package.json");
+    let content = fs::read_to_string(&package_json_path).ok()?;
+    let parsed: serde_json::Value = serde_json::from_str(&content).ok()?;
+    let scripts = parsed.get("scripts")?;
+
+    let has_build = scripts.get("build").is_some();
+    let has_test = scripts.get("test").is_some();
+
+    if has_build && has_test {
+        Some(BuildTestCommands {
+            build: "npm run build".to_string(),
+            test: "npm test".to_string(),
+        })
+    } else {
+        None
+    }
+}
+
+pub fn run_build_and_test(
+    worktree_path: &Path,
+    commands: &BuildTestCommands,
+) -> Result<BuildTestOutcome, String> {
+    let build_outcome = run_shell_command(worktree_path, &commands.build)?;
+    if !build_outcome.success {
+        return Ok(BuildTestOutcome::BuildFailed {
+            output: build_outcome.combined_output,
+        });
+    }
+
+    let test_outcome = run_shell_command(worktree_path, &commands.test)?;
+    if !test_outcome.success {
+        return Ok(BuildTestOutcome::TestFailed {
+            output: test_outcome.combined_output,
+        });
+    }
+
+    Ok(BuildTestOutcome::Success)
+}
+
+struct ShellCommandResult {
+    success: bool,
+    combined_output: String,
+}
+
+fn run_shell_command(
+    working_dir: &Path,
+    command: &str,
+) -> Result<ShellCommandResult, String> {
+    let output = Command::new("timeout")
+        .current_dir(working_dir)
+        .args(["--signal=TERM", "--kill-after=15s", "180s", "sh", "-c", command])
+        .output()
+        .map_err(|e| format!("failed to execute '{}': {}", command, e))?;
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    let combined_output = format!("--- stdout ---\n{}\n--- stderr ---\n{}", stdout, stderr);
+
+    Ok(ShellCommandResult {
+        success: output.status.success(),
+        combined_output,
+    })
 }
 
 pub fn squash_merge_task_branch(
@@ -1417,5 +1596,218 @@ mod tests {
         assert!(prompt.contains("src/main.rs"));
         assert!(prompt.contains("src/lib.rs"));
         assert!(prompt.contains("git rebase --continue"));
+    }
+
+    // -----------------------------------------------------------------------
+    // Build system detection tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn detect_build_commands_with_makefile() {
+        let temp_dir = TempDir::new().unwrap();
+        let makefile_content = "build:\n\tcargo build\n\ntest:\n\tcargo test\n";
+        fs::write(temp_dir.path().join("Makefile"), makefile_content).unwrap();
+
+        let result = detect_build_commands(temp_dir.path());
+        assert!(result.is_some());
+        let commands = result.unwrap();
+        assert_eq!(commands.build, "make build");
+        assert_eq!(commands.test, "make test");
+    }
+
+    #[test]
+    fn detect_build_commands_makefile_without_targets() {
+        let temp_dir = TempDir::new().unwrap();
+        let makefile_content = "clean:\n\trm -rf target\n";
+        fs::write(temp_dir.path().join("Makefile"), makefile_content).unwrap();
+
+        // Makefile에 build/test 타겟이 없으면 None
+        let result = detect_build_commands(temp_dir.path());
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn detect_build_commands_with_cargo_toml() {
+        let temp_dir = TempDir::new().unwrap();
+        fs::write(
+            temp_dir.path().join("Cargo.toml"),
+            "[package]\nname = \"test\"\n",
+        )
+        .unwrap();
+
+        let result = detect_build_commands(temp_dir.path());
+        assert!(result.is_some());
+        let commands = result.unwrap();
+        assert_eq!(commands.build, "cargo build");
+        assert_eq!(commands.test, "cargo test");
+    }
+
+    #[test]
+    fn detect_build_commands_with_package_json() {
+        let temp_dir = TempDir::new().unwrap();
+        let package_json = serde_json::json!({
+            "scripts": { "build": "tsc", "test": "jest" }
+        });
+        fs::write(
+            temp_dir.path().join("package.json"),
+            serde_json::to_string(&package_json).unwrap(),
+        )
+        .unwrap();
+
+        let result = detect_build_commands(temp_dir.path());
+        assert!(result.is_some());
+        let commands = result.unwrap();
+        assert_eq!(commands.build, "npm run build");
+        assert_eq!(commands.test, "npm test");
+    }
+
+    #[test]
+    fn detect_build_commands_with_go_mod() {
+        let temp_dir = TempDir::new().unwrap();
+        fs::write(
+            temp_dir.path().join("go.mod"),
+            "module example.com/test\n",
+        )
+        .unwrap();
+
+        let result = detect_build_commands(temp_dir.path());
+        assert!(result.is_some());
+        let commands = result.unwrap();
+        assert_eq!(commands.build, "go build ./...");
+        assert_eq!(commands.test, "go test ./...");
+    }
+
+    #[test]
+    fn detect_build_commands_returns_none_for_empty_dir() {
+        let temp_dir = TempDir::new().unwrap();
+        let result = detect_build_commands(temp_dir.path());
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn detect_build_commands_makefile_has_priority_over_cargo() {
+        let temp_dir = TempDir::new().unwrap();
+        fs::write(
+            temp_dir.path().join("Makefile"),
+            "build:\n\tcargo build\n\ntest:\n\tcargo test\n",
+        )
+        .unwrap();
+        fs::write(
+            temp_dir.path().join("Cargo.toml"),
+            "[package]\nname = \"test\"\n",
+        )
+        .unwrap();
+
+        let result = detect_build_commands(temp_dir.path());
+        assert!(result.is_some());
+        let commands = result.unwrap();
+        assert_eq!(commands.build, "make build");
+        assert_eq!(commands.test, "make test");
+    }
+
+    // -----------------------------------------------------------------------
+    // Build/test execution tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn run_build_and_test_success() {
+        let temp_dir = TempDir::new().unwrap();
+        let commands = BuildTestCommands {
+            build: "true".to_string(),
+            test: "true".to_string(),
+        };
+
+        let result = run_build_and_test(temp_dir.path(), &commands).unwrap();
+        assert!(matches!(result, BuildTestOutcome::Success));
+    }
+
+    #[test]
+    fn run_build_and_test_build_failure() {
+        let temp_dir = TempDir::new().unwrap();
+        let commands = BuildTestCommands {
+            build: "false".to_string(),
+            test: "true".to_string(),
+        };
+
+        let result = run_build_and_test(temp_dir.path(), &commands).unwrap();
+        assert!(matches!(result, BuildTestOutcome::BuildFailed { .. }));
+    }
+
+    #[test]
+    fn run_build_and_test_test_failure() {
+        let temp_dir = TempDir::new().unwrap();
+        let commands = BuildTestCommands {
+            build: "true".to_string(),
+            test: "false".to_string(),
+        };
+
+        let result = run_build_and_test(temp_dir.path(), &commands).unwrap();
+        assert!(matches!(result, BuildTestOutcome::TestFailed { .. }));
+    }
+
+    #[test]
+    fn run_build_and_test_captures_output() {
+        let temp_dir = TempDir::new().unwrap();
+        let commands = BuildTestCommands {
+            build: "echo build_ok && exit 1".to_string(),
+            test: "true".to_string(),
+        };
+
+        let result = run_build_and_test(temp_dir.path(), &commands).unwrap();
+        if let BuildTestOutcome::BuildFailed { output } = result {
+            assert!(output.contains("build_ok"));
+        } else {
+            panic!("expected BuildFailed");
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // Build/test repair schema and prompt tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn build_test_repair_result_schema_is_valid_json() {
+        let schema = build_test_repair_result_schema();
+        assert_eq!(schema["type"], "object");
+        let status_enum = schema["properties"]["status"]["enum"]
+            .as_array()
+            .unwrap();
+        assert!(status_enum.iter().any(|v| v == "BUILD_TEST_FIXED"));
+        assert!(status_enum.iter().any(|v| v == "BUILD_TEST_FIX_FAILED"));
+        assert!(schema["properties"]["report"].is_object());
+    }
+
+    #[test]
+    fn build_test_repair_result_deserialization() {
+        let json = serde_json::json!({
+            "status": "BUILD_TEST_FIXED",
+            "report": "Fixed compilation error in main.rs"
+        });
+        let result: BuildTestRepairResult = serde_json::from_value(json).unwrap();
+        assert_eq!(result.status, BuildTestRepairStatus::Fixed);
+        assert!(result.report.contains("compilation error"));
+
+        let json_failed = serde_json::json!({
+            "status": "BUILD_TEST_FIX_FAILED",
+            "report": "Cannot fix"
+        });
+        let result_failed: BuildTestRepairResult =
+            serde_json::from_value(json_failed).unwrap();
+        assert_eq!(result_failed.status, BuildTestRepairStatus::FixFailed);
+    }
+
+    #[test]
+    fn build_test_repair_prompt_contains_context() {
+        let prompt = build_build_test_repair_prompt(
+            "TASK-01",
+            "make build",
+            "make test",
+            "error: cannot find module",
+        );
+
+        assert!(prompt.contains("TASK-01"));
+        assert!(prompt.contains("make build"));
+        assert!(prompt.contains("make test"));
+        assert!(prompt.contains("cannot find module"));
     }
 }

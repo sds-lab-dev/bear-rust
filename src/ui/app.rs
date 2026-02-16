@@ -8,9 +8,10 @@ use crate::claude_code_client::{ClaudeCodeClient, ClaudeCodeRequest};
 use crate::config::Config;
 use super::clarification::{self, ClarificationQuestions, QaRound};
 use super::coding::{
-    self, CodingPhaseState, CodingTask, CodingTaskResult, CodingTaskStatus,
-    ConflictResolutionResult, ConflictResolutionStatus, RebaseOutcome,
-    TaskExtractionResponse, TaskReport, TaskWorktreeInfo,
+    self, BuildTestCommands, BuildTestOutcome, BuildTestRepairResult,
+    BuildTestRepairStatus, CodingPhaseState, CodingTask, CodingTaskResult,
+    CodingTaskStatus, ConflictResolutionResult, ConflictResolutionStatus,
+    RebaseOutcome, TaskExtractionResponse, TaskReport, TaskWorktreeInfo,
 };
 use super::planning::{self, PlanResponseType, PlanWritingResponse};
 use super::session_naming::{self, SessionNameResponse};
@@ -38,6 +39,7 @@ enum InputMode {
     PlanClarificationAnswer,
     PlanFeedback,
     Coding,
+    BuildTestCommandInput,
     Done,
 }
 
@@ -48,6 +50,8 @@ enum AgentOutcome {
     TaskExtraction(TaskExtractionResponse),
     CodingTaskCompleted(CodingTaskResult),
     ConflictResolutionCompleted(ConflictResolutionResult),
+    BuildTestCompleted(BuildTestOutcome),
+    BuildTestRepairCompleted(BuildTestRepairResult),
 }
 
 struct AgentThreadResult {
@@ -87,7 +91,21 @@ pub struct App {
     session_date_dir: Option<String>,
     coding_state: Option<CodingPhaseState>,
     pending_coding_report: Option<String>,
+    pending_build_test: Option<PendingBuildTest>,
+    build_test_command_phase: BuildTestCommandPhase,
     fatal_error: Option<String>,
+}
+
+struct PendingBuildTest {
+    task_id: String,
+    task_title: String,
+    report: String,
+    is_retry: bool,
+}
+
+enum BuildTestCommandPhase {
+    BuildCommand,
+    TestCommand,
 }
 
 impl App {
@@ -130,6 +148,8 @@ impl App {
             session_date_dir: None,
             coding_state: None,
             pending_coding_report: None,
+            pending_build_test: None,
+            build_test_command_phase: BuildTestCommandPhase::BuildCommand,
             fatal_error: None,
         })
     }
@@ -171,6 +191,9 @@ impl App {
                     self.handle_multiline_input(key_event, Self::submit_plan_feedback);
                 }
             }
+            InputMode::BuildTestCommandInput => {
+                self.handle_multiline_input(key_event, Self::submit_build_test_command);
+            }
             InputMode::AgentThinking | InputMode::Coding | InputMode::Done => {
                 if key_event.code == KeyCode::Esc {
                     self.should_quit = true;
@@ -190,7 +213,8 @@ impl App {
             | InputMode::SpecClarificationAnswer
             | InputMode::SpecFeedback
             | InputMode::PlanClarificationAnswer
-            | InputMode::PlanFeedback => {
+            | InputMode::PlanFeedback
+            | InputMode::BuildTestCommandInput => {
                 let cleaned = text.replace("\r\n", "\n").replace('\r', "\n");
                 self.insert_text_at_cursor(&cleaned);
             }
@@ -238,6 +262,12 @@ impl App {
                         Ok(AgentOutcome::ConflictResolutionCompleted(result)) => {
                             self.handle_conflict_resolution_result(result);
                         }
+                        Ok(AgentOutcome::BuildTestCompleted(outcome)) => {
+                            self.handle_build_test_result(outcome);
+                        }
+                        Ok(AgentOutcome::BuildTestRepairCompleted(result)) => {
+                            self.handle_build_test_repair_result(result);
+                        }
                         Err(error_message) => {
                             if matches!(self.input_mode, InputMode::Coding) {
                                 self.handle_coding_task_error(error_message);
@@ -274,6 +304,7 @@ impl App {
                 | InputMode::SpecFeedback
                 | InputMode::PlanClarificationAnswer
                 | InputMode::PlanFeedback
+                | InputMode::BuildTestCommandInput
         )
     }
 
@@ -318,6 +349,13 @@ impl App {
                     "[Enter] Submit feedback  [Ctrl+A] Approve  [Shift+Enter] New line  [Esc] Quit"
                 } else {
                     "[Enter] Submit feedback  [Ctrl+A] Approve  [Alt+Enter] New line  [Esc] Quit"
+                }
+            }
+            InputMode::BuildTestCommandInput => {
+                if self.keyboard_enhancement_enabled {
+                    "[Enter] Submit  [Shift+Enter] New line  [Esc] Quit"
+                } else {
+                    "[Enter] Submit  [Alt+Enter] New line  [Esc] Quit"
                 }
             }
             InputMode::AgentThinking | InputMode::Coding | InputMode::Done => "[Esc] Quit",
@@ -885,6 +923,7 @@ impl App {
             task_reports: Vec::new(),
             integration_branch,
             current_task_worktree: None,
+            build_test_commands: None,
         });
 
         self.start_next_coding_task();
@@ -1088,7 +1127,7 @@ impl App {
         match coding::rebase_onto_integration(&worktree_path, &integration_branch) {
             Ok(RebaseOutcome::Success) => {
                 self.add_system_message(&format!("[{}] 리베이스 성공.", task_id));
-                self.squash_merge_and_advance(task_id, task_title, report);
+                self.verify_build_and_test(task_id, task_title, report);
             }
             Ok(RebaseOutcome::Conflict { conflicted_files }) => {
                 self.add_system_message(&format!(
@@ -1152,6 +1191,316 @@ impl App {
             }
             if let Err(err) = coding::delete_branch(&workspace, &info.task_branch) {
                 self.add_system_message(&format!("태스크 브랜치 삭제 실패: {}", err));
+            }
+        }
+    }
+
+    fn verify_build_and_test(
+        &mut self,
+        task_id: String,
+        task_title: String,
+        report: String,
+    ) {
+        let worktree_path = self
+            .coding_state
+            .as_ref()
+            .unwrap()
+            .current_task_worktree
+            .as_ref()
+            .unwrap()
+            .worktree_path
+            .clone();
+
+        let already_detected = self
+            .coding_state
+            .as_ref()
+            .unwrap()
+            .build_test_commands
+            .is_some();
+
+        if !already_detected {
+            if let Some(commands) = coding::detect_build_commands(&worktree_path) {
+                self.add_system_message(&format!(
+                    "[{}] 빌드 시스템 감지: build='{}', test='{}'",
+                    task_id, commands.build, commands.test,
+                ));
+                self.coding_state.as_mut().unwrap().build_test_commands = Some(commands);
+            } else {
+                self.add_system_message(
+                    "빌드 시스템을 자동 감지할 수 없습니다. 빌드 명령어를 입력해주세요:",
+                );
+                self.ask_build_command(task_id, task_title, report);
+                return;
+            }
+        }
+
+        self.start_build_test_execution(task_id, task_title, report, false);
+    }
+
+    fn ask_build_command(
+        &mut self,
+        task_id: String,
+        task_title: String,
+        report: String,
+    ) {
+        self.pending_build_test = Some(PendingBuildTest {
+            task_id,
+            task_title,
+            report,
+            is_retry: false,
+        });
+        self.build_test_command_phase = BuildTestCommandPhase::BuildCommand;
+        self.input_buffer.clear();
+        self.cursor_position = 0;
+        self.input_mode = InputMode::BuildTestCommandInput;
+    }
+
+    fn submit_build_test_command(&mut self) {
+        let command = self.input_buffer.trim().to_string();
+        if command.is_empty() {
+            return;
+        }
+        self.add_user_message(&command);
+        self.input_buffer.clear();
+        self.cursor_position = 0;
+
+        match self.build_test_command_phase {
+            BuildTestCommandPhase::BuildCommand => {
+                let coding_state = self.coding_state.as_mut().unwrap();
+                coding_state.build_test_commands = Some(BuildTestCommands {
+                    build: command,
+                    test: String::new(),
+                });
+                self.build_test_command_phase = BuildTestCommandPhase::TestCommand;
+                self.add_system_message("테스트 명령어를 입력해주세요 (예: make test):");
+            }
+            BuildTestCommandPhase::TestCommand => {
+                let coding_state = self.coding_state.as_mut().unwrap();
+                if let Some(ref mut commands) = coding_state.build_test_commands {
+                    commands.test = command;
+                }
+
+                let pending = self.pending_build_test.take().unwrap();
+                self.start_build_test_execution(
+                    pending.task_id,
+                    pending.task_title,
+                    pending.report,
+                    pending.is_retry,
+                );
+            }
+        }
+    }
+
+    fn start_build_test_execution(
+        &mut self,
+        task_id: String,
+        task_title: String,
+        report: String,
+        is_retry: bool,
+    ) {
+        let commands = self
+            .coding_state
+            .as_ref()
+            .unwrap()
+            .build_test_commands
+            .clone()
+            .unwrap();
+        let worktree_path = self
+            .coding_state
+            .as_ref()
+            .unwrap()
+            .current_task_worktree
+            .as_ref()
+            .unwrap()
+            .worktree_path
+            .clone();
+
+        self.add_system_message(&format!(
+            "[{}] 빌드/테스트 검증 시작...",
+            task_id,
+        ));
+
+        self.pending_build_test = Some(PendingBuildTest {
+            task_id,
+            task_title,
+            report,
+            is_retry,
+        });
+
+        let client = self.claude_client.take().unwrap();
+        let (sender, receiver) = mpsc::channel();
+        self.agent_result_receiver = Some(receiver);
+        self.input_mode = InputMode::Coding;
+        self.thinking_started_at = Instant::now();
+
+        std::thread::spawn(move || {
+            let outcome = coding::run_build_and_test(&worktree_path, &commands)
+                .map(AgentOutcome::BuildTestCompleted);
+
+            let _ = sender.send(AgentStreamMessage::Completed(AgentThreadResult {
+                client,
+                outcome,
+            }));
+        });
+    }
+
+    fn handle_build_test_result(&mut self, outcome: BuildTestOutcome) {
+        let pending = self.pending_build_test.take().unwrap();
+
+        match outcome {
+            BuildTestOutcome::Success => {
+                self.add_system_message(&format!(
+                    "[{}] 빌드/테스트 검증 성공.",
+                    pending.task_id,
+                ));
+                self.squash_merge_and_advance(
+                    pending.task_id,
+                    pending.task_title,
+                    pending.report,
+                );
+            }
+            BuildTestOutcome::BuildFailed { output } => {
+                self.handle_build_test_failure(pending, "빌드", output);
+            }
+            BuildTestOutcome::TestFailed { output } => {
+                self.handle_build_test_failure(pending, "테스트", output);
+            }
+        }
+    }
+
+    fn handle_build_test_failure(
+        &mut self,
+        pending: PendingBuildTest,
+        failure_type: &str,
+        output: String,
+    ) {
+        if pending.is_retry {
+            self.add_system_message(&format!(
+                "[{}] 수리 후 {} 재실패. 태스크 차단 처리.",
+                pending.task_id, failure_type,
+            ));
+            self.cleanup_current_task_worktree();
+            self.save_and_advance_task(
+                pending.task_id,
+                CodingTaskStatus::ImplementationBlocked,
+                format!("{}\n\n---\n빌드/테스트 실패:\n{}", pending.report, output),
+            );
+        } else {
+            self.add_system_message(&format!(
+                "[{}] {} 실패. 수리 에이전트 시작...",
+                pending.task_id, failure_type,
+            ));
+            self.start_build_test_repair(
+                pending.task_id,
+                pending.task_title,
+                pending.report,
+                output,
+            );
+        }
+    }
+
+    fn start_build_test_repair(
+        &mut self,
+        task_id: String,
+        task_title: String,
+        report: String,
+        error_output: String,
+    ) {
+        self.pending_build_test = Some(PendingBuildTest {
+            task_id: task_id.clone(),
+            task_title,
+            report,
+            is_retry: true,
+        });
+
+        let commands = self
+            .coding_state
+            .as_ref()
+            .unwrap()
+            .build_test_commands
+            .as_ref()
+            .unwrap();
+        let user_prompt = coding::build_build_test_repair_prompt(
+            &task_id,
+            &commands.build,
+            &commands.test,
+            &error_output,
+        );
+
+        let mut client = match self.claude_client.take() {
+            Some(c) => c,
+            None => {
+                self.add_system_message("수리 에이전트를 위한 세션을 찾을 수 없습니다.");
+                let pending = self.pending_build_test.take().unwrap();
+                self.cleanup_current_task_worktree();
+                self.save_and_advance_task(
+                    pending.task_id,
+                    CodingTaskStatus::ImplementationBlocked,
+                    format!(
+                        "{}\n\n---\n빌드/테스트 실패 (수리 불가):\n{}",
+                        pending.report, error_output,
+                    ),
+                );
+                return;
+            }
+        };
+
+        let (sender, receiver) = mpsc::channel();
+        self.agent_result_receiver = Some(receiver);
+        self.input_mode = InputMode::Coding;
+        self.thinking_started_at = Instant::now();
+
+        std::thread::spawn(move || {
+            let request = ClaudeCodeRequest {
+                user_prompt,
+                output_schema: coding::build_test_repair_result_schema(),
+            };
+
+            let stream_sender = sender.clone();
+            let outcome = client
+                .query_streaming::<BuildTestRepairResult, _>(&request, |line| {
+                    let _ = stream_sender.send(AgentStreamMessage::StreamLine(line));
+                })
+                .map(AgentOutcome::BuildTestRepairCompleted)
+                .map_err(|err| err.to_string());
+
+            let _ = sender.send(AgentStreamMessage::Completed(AgentThreadResult {
+                client,
+                outcome,
+            }));
+        });
+    }
+
+    fn handle_build_test_repair_result(&mut self, result: BuildTestRepairResult) {
+        let pending = self.pending_build_test.take().unwrap();
+
+        match result.status {
+            BuildTestRepairStatus::Fixed => {
+                self.add_system_message(&format!(
+                    "[{}] 수리 에이전트 완료. 빌드/테스트 재검증...",
+                    pending.task_id,
+                ));
+                self.start_build_test_execution(
+                    pending.task_id,
+                    pending.task_title,
+                    pending.report,
+                    true,
+                );
+            }
+            BuildTestRepairStatus::FixFailed => {
+                self.add_system_message(&format!(
+                    "[{}] 수리 실패: {}",
+                    pending.task_id, result.report,
+                ));
+                self.cleanup_current_task_worktree();
+                self.save_and_advance_task(
+                    pending.task_id,
+                    CodingTaskStatus::ImplementationBlocked,
+                    format!(
+                        "{}\n\n---\n빌드/테스트 수리 실패: {}",
+                        pending.report, result.report,
+                    ),
+                );
             }
         }
     }
@@ -1287,7 +1636,7 @@ impl App {
                     .pending_coding_report
                     .take()
                     .unwrap_or(result.report);
-                self.squash_merge_and_advance(task_id, task_title, report);
+                self.verify_build_and_test(task_id, task_title, report);
             }
             ConflictResolutionStatus::ConflictResolutionFailed => {
                 self.add_system_message(&format!(
