@@ -98,6 +98,7 @@ pub struct App {
     session_name: Option<String>,
     session_date_dir: Option<String>,
     base_journal_dir: Option<PathBuf>,
+    integration_branch: Option<String>,
     coding_state: Option<CodingPhaseState>,
     pending_coding_report: Option<String>,
     review_state: Option<ReviewState>,
@@ -172,6 +173,7 @@ impl App {
             session_name: None,
             session_date_dir: None,
             base_journal_dir: None,
+            integration_branch: None,
             coding_state: None,
             pending_coding_report: None,
             review_state: None,
@@ -288,8 +290,27 @@ impl App {
                             &format!("사용자 요청 파일 저장 실패: {}", err),
                         );
                     }
-                    self.session_name = Some(name);
+                    self.session_name = Some(name.clone());
                     self.session_date_dir = Some(date_dir);
+
+                    if self.integration_branch.is_none()
+                        && let Some(ws) = &self.confirmed_workspace
+                    {
+                        match coding::create_integration_branch(ws, &name) {
+                            Ok(branch) => {
+                                self.add_system_message(
+                                    &format!("통합 브랜치 생성: {}", branch),
+                                );
+                                self.integration_branch = Some(branch);
+                            }
+                            Err(err) => {
+                                self.add_system_message(&format!(
+                                    "통합 브랜치 생성 실패: {}",
+                                    err,
+                                ));
+                            }
+                        }
+                    }
                 }
                 Ok(AgentStreamMessage::StreamLine(line)) => {
                     self.add_system_message(&line);
@@ -1307,21 +1328,29 @@ impl App {
         }
         self.add_system_message(&schedule_message);
 
-        let workspace = self.confirmed_workspace.clone().unwrap();
-        let session_name = self
-            .session_name
-            .clone()
-            .unwrap_or_else(|| "unnamed".to_string());
-
-        let integration_branch =
-            match coding::create_integration_branch(&workspace, &session_name) {
-                Ok(branch) => branch,
-                Err(err) => {
-                    self.add_system_message(&format!("Failed to create git branch: {}", err));
-                    self.input_mode = InputMode::Done;
-                    return;
+        let integration_branch = match &self.integration_branch {
+            Some(branch) => branch.clone(),
+            None => {
+                let workspace = self.confirmed_workspace.clone().unwrap();
+                let session_name = self
+                    .session_name
+                    .clone()
+                    .unwrap_or_else(|| "unnamed".to_string());
+                match coding::create_integration_branch(&workspace, &session_name) {
+                    Ok(branch) => {
+                        self.integration_branch = Some(branch.clone());
+                        branch
+                    }
+                    Err(err) => {
+                        self.add_system_message(
+                            &format!("Failed to create git branch: {}", err),
+                        );
+                        self.input_mode = InputMode::Done;
+                        return;
+                    }
                 }
-            };
+            }
+        };
 
         self.add_system_message(&format!(
             "코딩 워크스페이스 준비 완료.\n통합 브랜치: {}",
@@ -2147,7 +2176,6 @@ impl App {
         let worktree_info = coding_state.current_task_worktree.as_ref().unwrap();
         let worktree_path = worktree_info.worktree_path.clone();
         let task_branch = worktree_info.task_branch.clone();
-        let integration_branch = coding_state.integration_branch.clone();
 
         let date_dir = self.session_date_dir.clone().unwrap_or_default();
         let session_name = self.session_name.clone().unwrap_or_default();
@@ -2175,9 +2203,9 @@ impl App {
         }
         let report_file_path = workspace_journal.join(format!("{}.md", task_id));
 
+        let workspace = self.confirmed_workspace.clone().unwrap();
         match coding::fast_forward_merge_task_branch(
-            &worktree_path,
-            &integration_branch,
+            &workspace,
             &task_branch,
         ) {
             Ok(()) => {

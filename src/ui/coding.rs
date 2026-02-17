@@ -1091,9 +1091,9 @@ pub fn create_integration_branch(
 
     let output = Command::new("git")
         .current_dir(workspace)
-        .args(["branch", &branch_name])
+        .args(["checkout", "-b", &branch_name])
         .output()
-        .map_err(|e| format!("failed to execute git branch: {}", e))?;
+        .map_err(|e| format!("failed to execute git checkout -b: {}", e))?;
 
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
@@ -1339,26 +1339,11 @@ fn run_shell_command(
 }
 
 pub fn fast_forward_merge_task_branch(
-    worktree_path: &Path,
-    integration_branch: &str,
+    workspace: &Path,
     task_branch: &str,
 ) -> Result<(), String> {
-    let checkout_output = Command::new("git")
-        .current_dir(worktree_path)
-        .args(["checkout", integration_branch])
-        .output()
-        .map_err(|e| format!("failed to execute git checkout: {}", e))?;
-
-    if !checkout_output.status.success() {
-        let stderr = String::from_utf8_lossy(&checkout_output.stderr);
-        return Err(format!(
-            "failed to checkout integration branch: {}",
-            stderr.trim()
-        ));
-    }
-
     let merge_output = Command::new("git")
-        .current_dir(worktree_path)
+        .current_dir(workspace)
         .args(["merge", "--ff-only", task_branch])
         .output()
         .map_err(|e| format!("failed to execute git merge --ff-only: {}", e))?;
@@ -1874,15 +1859,14 @@ mod tests {
         rebase_onto_integration(&worktree_path, &integration).unwrap();
 
         fast_forward_merge_task_branch(
-            &worktree_path,
-            &integration,
+            workspace,
             &task_branch,
         )
         .unwrap();
 
         // fast-forward 머지 후 태스크 브랜치의 커밋들이 그대로 통합 브랜치에 존재하는지 확인
         let log_output = Command::new("git")
-            .current_dir(&worktree_path)
+            .current_dir(workspace)
             .args(["log", "--oneline", &format!("{}..HEAD", "main")])
             .output()
             .unwrap();
