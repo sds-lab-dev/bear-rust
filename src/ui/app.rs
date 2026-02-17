@@ -2194,14 +2194,7 @@ impl App {
             task_id,
         ));
 
-        let workspace_journal = self.workspace_journal_dir();
-        if let Err(err) = coding::save_task_report(&workspace_journal, &task_id, &report) {
-            self.add_system_message(&format!(
-                "[{}] 워크스페이스 리포트 저장 실패: {}",
-                task_id, err,
-            ));
-        }
-        let report_file_path = workspace_journal.join(format!("{}.md", task_id));
+        let report_file_path = self.workspace_journal_dir().join(format!("{}.md", task_id));
 
         let workspace = self.confirmed_workspace.clone().unwrap();
         match coding::fast_forward_merge_task_branch(
@@ -2354,20 +2347,7 @@ impl App {
         status: CodingTaskStatus,
         report: String,
     ) {
-        let journal_dir = self.journal_dir();
-        let report_file_path = match coding::save_task_report(
-            &journal_dir,
-            &task_id,
-            &report,
-        ) {
-            Ok(path) => path,
-            Err(err) => {
-                self.add_system_message(&format!("Failed to save report: {}", err));
-                PathBuf::new()
-            }
-        };
-
-        self.advance_task(task_id, status, report, report_file_path);
+        self.advance_task(task_id, status, report, PathBuf::new());
     }
 
     fn advance_task(
