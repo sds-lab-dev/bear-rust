@@ -1,5 +1,5 @@
 {
-    "name": "Dev Container for Bear AI developer",
+    "name": "Bear AI developer in Rust",
     "build": {
         "dockerfile": "Dockerfile",
         "context": "..",
