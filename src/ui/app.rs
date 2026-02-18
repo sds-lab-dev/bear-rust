@@ -294,14 +294,30 @@ impl App {
                     self.session_date_dir = Some(date_dir);
 
                     if self.integration_branch.is_none()
-                        && let Some(ws) = &self.confirmed_workspace
+                        && let Some(ws) = self.confirmed_workspace.clone()
                     {
-                        match coding::create_integration_branch(ws, &name) {
+                        match coding::create_integration_branch(&ws, &name) {
                             Ok(branch) => {
                                 self.add_system_message(
                                     &format!("통합 브랜치 생성: {}", branch),
                                 );
                                 self.integration_branch = Some(branch);
+
+                                let user_request_path =
+                                    journal_dir.join("user-request.md");
+                                if user_request_path.exists()
+                                    && let Err(err) =
+                                        coding::commit_file_in_workspace(
+                                            &ws,
+                                            &user_request_path,
+                                            "Add user request",
+                                        )
+                                {
+                                    self.add_system_message(&format!(
+                                        "사용자 요청 파일 커밋 실패: {}",
+                                        err,
+                                    ));
+                                }
                             }
                             Err(err) => {
                                 self.add_system_message(&format!(
@@ -1136,6 +1152,17 @@ impl App {
             self.add_system_message(&format!("스펙 파일 저장 실패: {}", err));
         }
 
+        if let Some(ws) = &self.confirmed_workspace {
+            let spec_path = journal_dir.join("spec.md");
+            if let Err(err) = coding::commit_file_in_workspace(
+                ws,
+                &spec_path,
+                "Add approved specification",
+            ) {
+                self.add_system_message(&format!("스펙 파일 커밋 실패: {}", err));
+            }
+        }
+
         self.add_system_message("스펙이 승인되었습니다. 개발 계획을 작성합니다.");
         self.start_plan_writing_query(true);
     }
@@ -1262,6 +1289,17 @@ impl App {
         let journal_dir = self.journal_dir();
         if let Err(err) = planning::save_approved_plan(&journal_dir, &plan) {
             self.add_system_message(&format!("플랜 파일 저장 실패: {}", err));
+        }
+
+        if let Some(ws) = &self.confirmed_workspace {
+            let plan_path = journal_dir.join("plan.md");
+            if let Err(err) = coding::commit_file_in_workspace(
+                ws,
+                &plan_path,
+                "Add approved development plan",
+            ) {
+                self.add_system_message(&format!("플랜 파일 커밋 실패: {}", err));
+            }
         }
 
         self.add_system_message("개발 계획이 승인되었습니다. 작업 목록을 추출합니다.");

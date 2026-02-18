@@ -1442,6 +1442,36 @@ pub fn collect_upstream_report_paths(
         .collect()
 }
 
+pub fn commit_file_in_workspace(
+    workspace: &Path,
+    file_path: &Path,
+    commit_message: &str,
+) -> Result<(), String> {
+    let add_output = Command::new("git")
+        .current_dir(workspace)
+        .args(["add", &file_path.display().to_string()])
+        .output()
+        .map_err(|e| format!("failed to git add: {}", e))?;
+
+    if !add_output.status.success() {
+        let stderr = String::from_utf8_lossy(&add_output.stderr);
+        return Err(format!("failed to git add: {}", stderr.trim()));
+    }
+
+    let commit_output = Command::new("git")
+        .current_dir(workspace)
+        .args(["commit", "-m", commit_message])
+        .output()
+        .map_err(|e| format!("failed to git commit: {}", e))?;
+
+    if !commit_output.status.success() {
+        let stderr = String::from_utf8_lossy(&commit_output.stderr);
+        return Err(format!("failed to git commit: {}", stderr.trim()));
+    }
+
+    Ok(())
+}
+
 pub fn save_and_commit_task_report_in_worktree(
     worktree_path: &Path,
     date_dir: &str,
@@ -2351,5 +2381,50 @@ mod tests {
         assert!(stdout.contains("Add implementation report for TASK-00"));
 
         remove_worktree(workspace, &worktree_path).unwrap();
+    }
+
+    #[test]
+    fn commit_file_in_workspace_commits_file() {
+        let temp_dir = TempDir::new().unwrap();
+        let workspace = temp_dir.path();
+        init_git_repo(workspace);
+        make_commit(workspace, "init.txt", "init", "initial commit");
+
+        create_integration_branch(workspace, "test").unwrap();
+
+        let bear_dir = workspace.join(".bear").join("20260218").join("test-session");
+        fs::create_dir_all(&bear_dir).unwrap();
+        let file_path = bear_dir.join("user-request.md");
+        fs::write(&file_path, "# User Request\nBuild a feature.").unwrap();
+
+        commit_file_in_workspace(workspace, &file_path, "Add user request").unwrap();
+
+        let log_output = Command::new("git")
+            .current_dir(workspace)
+            .args(["log", "--oneline", "-1"])
+            .output()
+            .unwrap();
+        let stdout = String::from_utf8_lossy(&log_output.stdout);
+        assert!(stdout.contains("Add user request"));
+
+        let status_output = Command::new("git")
+            .current_dir(workspace)
+            .args(["status", "--porcelain"])
+            .output()
+            .unwrap();
+        let status = String::from_utf8_lossy(&status_output.stdout);
+        assert!(!status.contains("user-request.md"));
+    }
+
+    #[test]
+    fn commit_file_in_workspace_fails_for_nonexistent_file() {
+        let temp_dir = TempDir::new().unwrap();
+        let workspace = temp_dir.path();
+        init_git_repo(workspace);
+        make_commit(workspace, "init.txt", "init", "initial commit");
+
+        let nonexistent = workspace.join("does-not-exist.md");
+        let result = commit_file_in_workspace(workspace, &nonexistent, "Should fail");
+        assert!(result.is_err());
     }
 }
