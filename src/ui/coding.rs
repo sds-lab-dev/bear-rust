@@ -1501,10 +1501,11 @@ pub fn save_and_commit_task_report_in_worktree(
         return Err(format!("failed to git add report: {}", stderr.trim()));
     }
 
-    let commit_message = format!("Add implementation report for {}", task_id);
+    // Amend the previous commit (code changes) to include the task report,
+    // so they are recorded as a single commit.
     let commit_output = Command::new("git")
         .current_dir(worktree_path)
-        .args(["commit", "-m", &commit_message])
+        .args(["commit", "--amend", "--no-edit"])
         .output()
         .map_err(|e| format!("failed to git commit report: {}", e))?;
 
@@ -1729,6 +1730,13 @@ mod tests {
             .args(["init"])
             .output()
             .unwrap();
+        // Normalize the initial branch name to "master" so tests are not affected
+        // by the system's init.defaultBranch setting (which may be "main" or "master").
+        Command::new("git")
+            .current_dir(dir)
+            .args(["symbolic-ref", "HEAD", "refs/heads/master"])
+            .output()
+            .unwrap();
         Command::new("git")
             .current_dir(dir)
             .args(["config", "user.email", "test@test.com"])
@@ -1737,6 +1745,12 @@ mod tests {
         Command::new("git")
             .current_dir(dir)
             .args(["config", "user.name", "Test"])
+            .output()
+            .unwrap();
+        // Disable commit signing so tests are not affected by global signing settings.
+        Command::new("git")
+            .current_dir(dir)
+            .args(["config", "commit.gpgsign", "false"])
             .output()
             .unwrap();
     }
@@ -1897,7 +1911,7 @@ mod tests {
         // fast-forward 머지 후 태스크 브랜치의 커밋들이 그대로 통합 브랜치에 존재하는지 확인
         let log_output = Command::new("git")
             .current_dir(workspace)
-            .args(["log", "--oneline", &format!("{}..HEAD", "main")])
+            .args(["log", "--oneline", &format!("{}..HEAD", "master")])
             .output()
             .unwrap();
         let stdout = String::from_utf8_lossy(&log_output.stdout);
@@ -2371,14 +2385,27 @@ mod tests {
         let content = fs::read_to_string(&report_path).unwrap();
         assert!(content.contains("Implementation complete."));
 
-        // 커밋되었는지 확인
+        // 별도 커밋이 아닌 직전 코드 커밋에 amend되었는지 확인:
+        // 1) 커밋 수가 늘지 않고 코드 커밋 메시지가 유지되어야 함
         let log_output = Command::new("git")
             .current_dir(&worktree_path)
-            .args(["log", "--oneline", "-1"])
+            .args(["log", "--oneline"])
             .output()
             .unwrap();
-        let stdout = String::from_utf8_lossy(&log_output.stdout);
-        assert!(stdout.contains("Add implementation report for TASK-00"));
+        let log = String::from_utf8_lossy(&log_output.stdout);
+        let commit_lines: Vec<&str> = log.lines().collect();
+        // initial commit + feature commit(amended) = 2개
+        assert_eq!(commit_lines.len(), 2, "task report must be in the code commit, not a separate commit");
+        assert!(commit_lines[0].contains("feature commit"), "commit message must remain the code commit message");
+
+        // 2) 레포트 파일이 해당 커밋에 포함되어야 함
+        let show_output = Command::new("git")
+            .current_dir(&worktree_path)
+            .args(["show", "--name-only", "--format=", "HEAD"])
+            .output()
+            .unwrap();
+        let show = String::from_utf8_lossy(&show_output.stdout);
+        assert!(show.contains("TASK-00.md"), "task report must be included in the code commit");
 
         remove_worktree(workspace, &worktree_path).unwrap();
     }
