@@ -3,7 +3,59 @@
     "tasks": [
         {
             "type": "shell",
-            "command": "make",
+            "command": "cargo",
+            "args": [
+                "clippy",
+                "--",
+                "-D",
+                "warnings",
+                "--no-deps"
+            ],
+            "group": "build",
+            "label": "Check",
+            "presentation": {
+                "panel": "shared",
+                "clear": false,
+                "close": false
+            },
+            "options": {
+                "shell": {
+                    "executable": "/bin/bash",
+                    "args": [
+                        "--login",
+                        "-c"
+                    ]
+                }
+            }
+        },
+        {
+            "type": "shell",
+            "command": "cargo",
+            "args": [
+                "test",
+                "--",
+                "--no-capture"
+            ],
+            "group": "build",
+            "label": "Test",
+            "presentation": {
+                "panel": "shared",
+                "clear": false,
+                "close": false
+            },
+            "options": {
+                "shell": {
+                    "executable": "/bin/bash",
+                    "args": [
+                        "--login",
+                        "-c"
+                    ]
+                }
+            }
+        },
+        {
+            "type": "shell",
+            "command": "cargo",
             "args": [
                 "build"
             ],
@@ -23,12 +75,15 @@
                     ]
                 }
             },
-            "dependsOn": "Check",
+            "dependsOn": [
+                "Check",
+                "Test"
+            ],
             "dependsOrder": "sequence"
         },
         {
             "type": "shell",
-            "command": "make",
+            "command": "cargo",
             "args": [
                 "run"
             ],
@@ -52,29 +107,6 @@
             "dependsOrder": "sequence",
             "runOptions": {
                 "instanceLimit": 100
-            }
-        },
-        {
-            "type": "shell",
-            "command": "make",
-            "args": [
-                "check"
-            ],
-            "group": "build",
-            "label": "Check",
-            "presentation": {
-                "panel": "shared",
-                "clear": false,
-                "close": false
-            },
-            "options": {
-                "shell": {
-                    "executable": "/bin/bash",
-                    "args": [
-                        "--login",
-                        "-c"
-                    ]
-                }
             }
         }
     ]
