@@ -107,7 +107,7 @@ The Bear AI Developer application supports the following primary development flo
 - You MAY use English only when one of the following is true:
   - Quoting exact identifiers or artifacts that must remain unchanged (file paths, symbol names, command names, configuration keys, error messages).
   - Using Korean would likely distort meaning for technical terms, standards, proper nouns, or established acronyms.
-  - Commit messages must be in English to maintain consistency and clarity in the version history.
+  - Commit messages and comments in code must be in English to maintain consistency and clarity in the version history.
 - If you use English for a specific phrase to avoid ambiguity, keep it minimal and immediately continue in Korean.
 
 ## Coding conventions
